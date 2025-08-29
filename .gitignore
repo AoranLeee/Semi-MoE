@@ -1,0 +1,6 @@
+__pycache__/
+.vscode
+__MACOSX
+seg_pred/*
+checkpoints/*
+dataset/*
