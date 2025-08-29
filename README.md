@@ -2,17 +2,18 @@
 
 ## Introduction
 Semi-MoE is the first multi-task Mixture-of-Experts framework designed for semi-supervised histopathology image segmentation. This model leverages expert networks to enhance segmentation performance, particularly in scenarios with limited labeled data.
-![image](https://github.com/user-attachments/assets/dfa20392-3037-4e8c-84ce-271f6448ac8d)
+<img width="1437" height="946" alt="image" src="https://github.com/user-attachments/assets/3975dd21-89b3-4e97-8d89-3083f6bde052" />
+
 
 ---
 
-## 📂 Data Preparation
+## Data Preparation
 
-### 1️⃣ Download the Datasets
+### 1. Download the Datasets
 - **GlaS dataset**: [Download Here](https://datasets.activeloop.ai/docs/ml/datasets/glas-dataset/)
 - **CRAG dataset**: [Download Here](https://opendatalab.com/OpenDataLab/CRAG/tree/main)
 
-### 2️⃣ Organize the Dataset in the Following Structure
+### 2. Organize the Dataset in the Following Structure
 ```bash
  dataset/
  ├── GlaS
@@ -39,19 +40,19 @@ Semi-MoE is the first multi-task Mixture-of-Experts framework designed for semi-
 
 ---
 
-## 🚀 Training and Testing
+## Training and Testing
 
-### 1️⃣ Install Dependencies
+### 1. Install Dependencies
 ```bash
 pip install -r requirements.txt
 ```
 
-### 2️⃣ Train the Model
+### 2. Train the Model
 ```bash
 python train.py
 ```
 
-### 3️⃣ Test the Model
+### 3. Test the Model
 Load your checkpoint and run:
 ```bash
 python test.py
