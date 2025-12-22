@@ -87,17 +87,18 @@ class DiceLoss(nn.Module):
         dice = BinaryDiceLoss(**self.kwargs)
         total_loss = 0
         predict = F.softmax(predict, dim=1)
-
-        for i in range(target.shape[-1]):
+        # expect target shape: (B, C, H, W), iterate over class/channel dim
+        for i in range(target.shape[1]):
             if i != self.ignore_index:
-                dice_loss = dice(predict[:, i], target[..., i], valid_mask)
+                # predict[:, i] -> (B, H, W), target[:, i] -> (B, H, W)
+                dice_loss = dice(predict[:, i], target[:, i], valid_mask)
                 if self.weight is not None:
                     assert self.weight.shape[0] == target.shape[1], \
                         'Expect weight shape [{}], get[{}]'.format(target.shape[1], self.weight.shape[0])
                     dice_loss *= self.weights[i]
                 total_loss += dice_loss
 
-        return total_loss / target.shape[-1]
+        return total_loss / target.shape[1]
 
     def _aux_forward(self, output, target, **kwargs):
         # *preds, target = tuple(inputs)
@@ -125,7 +126,7 @@ class DiceLoss(nn.Module):
         valid_mask_long = valid_mask_bool.long()
         loss = self._base_forward(output[0], target_one_hot, valid_mask_long)
         for i in range(1, len(output)):
-            aux_loss = self._base_forward(output[i], target_one_hot, valid_mask)
+            aux_loss = self._base_forward(output[i], target_one_hot, valid_mask_long)
             loss += self.aux_weight * aux_loss
         return loss
 
