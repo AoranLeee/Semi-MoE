@@ -114,6 +114,11 @@ class DiceLoss(nn.Module):
         if valid_mask_bool.any():
             max_label = int(torch.max(target_safe[valid_mask_bool]).item())
             if max_label >= num_classes:
+                # debug prints to help locate problematic labels
+                target_cpu = target_safe.detach().cpu()
+                print(f"num_classes = {num_classes}")
+                print("target min/max =", int(target_cpu.min()), int(target_cpu.max()))
+                print("unique labels =", torch.unique(target_cpu))
                 raise RuntimeError(f"target labels out of range for one_hot: max={max_label}, num_classes={num_classes}")
         # one-hot and permute to (B, C, H, W)
         target_one_hot = F.one_hot(target_safe.long(), num_classes=num_classes).permute(0, 3, 1, 2).float()
@@ -144,7 +149,12 @@ class DiceLoss(nn.Module):
             if valid_mask_bool.any():
                 max_label = int(torch.max(target_safe[valid_mask_bool]).item())
                 if max_label >= num_classes:
-                    raise RuntimeError(f"target labels out of range for one_hot: max={max_label}, num_classes={num_classes}")
+                        # debug prints to help locate problematic labels
+                        target_cpu = target_safe.detach().cpu()
+                        print(f"num_classes = {num_classes}")
+                        print("target min/max =", int(target_cpu.min()), int(target_cpu.max()))
+                        print("unique labels =", torch.unique(target_cpu))
+                        raise RuntimeError(f"target labels out of range for one_hot: max={max_label}, num_classes={num_classes}")
             target_one_hot = F.one_hot(target_safe.long(), num_classes=num_classes).permute(0, 3, 1, 2).float()
             target_one_hot = target_one_hot.to(output.device)
             valid_mask = valid_mask_bool.unsqueeze(1).to(target_one_hot.dtype).to(target_one_hot.device)
