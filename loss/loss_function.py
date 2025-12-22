@@ -101,11 +101,29 @@ class DiceLoss(nn.Module):
 
     def _aux_forward(self, output, target, **kwargs):
         # *preds, target = tuple(inputs)
-        valid_mask = (target != self.ignore_index).long()
+        # mask out ignore_index positions before one-hot
+        ignore_index = self.ignore_index
+        valid_mask_bool = (target != ignore_index)
+        # make a safe copy where ignored positions are set to 0 (placeholder)
+        target_safe = target.clone()
+        target_safe[~valid_mask_bool] = 0
         # ensure one-hot uses the same number of classes as the network prediction
         num_classes = output[0].shape[1] if isinstance(output, (list, tuple)) else output.shape[1]
-        target_one_hot = F.one_hot(torch.clamp_min(target, 0), num_classes=num_classes)
-        loss = self._base_forward(output[0], target_one_hot, valid_mask)
+        # check that remaining (valid) labels fit within num_classes
+        if valid_mask_bool.any():
+            max_label = int(torch.max(target_safe[valid_mask_bool]).item())
+            if max_label >= num_classes:
+                raise RuntimeError(f"target labels out of range for one_hot: max={max_label}, num_classes={num_classes}")
+        # one-hot and permute to (B, C, H, W)
+        target_one_hot = F.one_hot(target_safe.long(), num_classes=num_classes).permute(0, 3, 1, 2).float()
+        # move to same device as model output
+        target_one_hot = target_one_hot.to(output[0].device)
+        # apply valid mask to zero-out ignored positions in one-hot
+        valid_mask = valid_mask_bool.unsqueeze(1).to(target_one_hot.dtype).to(target_one_hot.device)
+        target_one_hot = target_one_hot * valid_mask
+        # valid_mask for loss functions expects long tensor per original API
+        valid_mask_long = valid_mask_bool.long()
+        loss = self._base_forward(output[0], target_one_hot, valid_mask_long)
         for i in range(1, len(output)):
             aux_loss = self._base_forward(output[i], target_one_hot, valid_mask)
             loss += self.aux_weight * aux_loss
@@ -117,11 +135,21 @@ class DiceLoss(nn.Module):
         if self.aux:
             return self._aux_forward(output, target)
         else:
-            valid_mask = (target != self.ignore_index).long()
-            # infer num_classes from output channels to avoid mismatches when target contains unexpected labels
+            ignore_index = self.ignore_index
+            valid_mask_bool = (target != ignore_index)
+            target_safe = target.clone()
+            target_safe[~valid_mask_bool] = 0
             num_classes = output.shape[1]
-            target_one_hot = F.one_hot(torch.clamp_min(target, 0), num_classes=num_classes)
-            return self._base_forward(output, target_one_hot, valid_mask)
+            if valid_mask_bool.any():
+                max_label = int(torch.max(target_safe[valid_mask_bool]).item())
+                if max_label >= num_classes:
+                    raise RuntimeError(f"target labels out of range for one_hot: max={max_label}, num_classes={num_classes}")
+            target_one_hot = F.one_hot(target_safe.long(), num_classes=num_classes).permute(0, 3, 1, 2).float()
+            target_one_hot = target_one_hot.to(output.device)
+            valid_mask = valid_mask_bool.unsqueeze(1).to(target_one_hot.dtype).to(target_one_hot.device)
+            target_one_hot = target_one_hot * valid_mask
+            valid_mask_long = valid_mask_bool.long()
+            return self._base_forward(output, target_one_hot, valid_mask_long)
 
 
 def softmax_mse_loss(input_logits, target_logits, sigmoid=False):
