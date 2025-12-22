@@ -86,7 +86,7 @@ class MultiGatingNetwork(nn.Module):
         w1 = self.gating1(x)
         w2 = self.gating2(x)
         w3 = self.gating3(x)
-        x = x.view(B, 3, 64, H, W)
+        x = x.view(B, 3, 64, H, W) # B, num_expert, C', H, W
 
         out1_f = (x * w1).sum(dim=1)
         out2_f = (x * w2).sum(dim=1) 

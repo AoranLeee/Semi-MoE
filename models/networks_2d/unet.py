@@ -383,6 +383,7 @@ class R2AttU_Net(nn.Module):
         self.Att2 = Attention_block(F_g=64, F_l=64, F_int=32)
         self.Up_RRCNN2 = RRCNN_block(ch_in=128, ch_out=64, t=t)
 
+        #输出维度不同，输出头不同
         self.Conv_1x1 = nn.Conv2d(64, num_classes, kernel_size=1, stride=1, padding=0)
 
     def forward(self, x):
