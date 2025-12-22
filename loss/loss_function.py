@@ -102,7 +102,9 @@ class DiceLoss(nn.Module):
     def _aux_forward(self, output, target, **kwargs):
         # *preds, target = tuple(inputs)
         valid_mask = (target != self.ignore_index).long()
-        target_one_hot = F.one_hot(torch.clamp_min(target, 0))
+        # ensure one-hot uses the same number of classes as the network prediction
+        num_classes = output[0].shape[1] if isinstance(output, (list, tuple)) else output.shape[1]
+        target_one_hot = F.one_hot(torch.clamp_min(target, 0), num_classes=num_classes)
         loss = self._base_forward(output[0], target_one_hot, valid_mask)
         for i in range(1, len(output)):
             aux_loss = self._base_forward(output[i], target_one_hot, valid_mask)
@@ -116,7 +118,9 @@ class DiceLoss(nn.Module):
             return self._aux_forward(output, target)
         else:
             valid_mask = (target != self.ignore_index).long()
-            target_one_hot = F.one_hot(torch.clamp_min(target, 0))
+            # infer num_classes from output channels to avoid mismatches when target contains unexpected labels
+            num_classes = output.shape[1]
+            target_one_hot = F.one_hot(torch.clamp_min(target, 0), num_classes=num_classes)
             return self._base_forward(output, target_one_hot, valid_mask)
 
 
