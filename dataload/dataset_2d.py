@@ -108,6 +108,8 @@ class DatasetSemiMoE(Dataset):
             mask = Image.open(mask_path)
             mask = np.array(mask)
 
+            mask = (mask > 0).astype(np.uint8)
+            
             augment_1 = self.augmentation_1(image=img_1, mask=mask)
             img_1 = augment_1['image']
             mask_1 = augment_1['mask']
