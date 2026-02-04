@@ -55,6 +55,9 @@ def init_seeds(seed):
     torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.deterministic = True
 
+def count_params(model):
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
@@ -205,6 +208,16 @@ if __name__ == '__main__':
     #为 loss_fn（MultiTaskLoss 的可学习参数）创建 Adam 优化器，学习率固定为 0.05
     optimizer5 = optim.Adam(loss_fn.parameters(), 0.05, weight_decay=5 * 10 ** args.wd)
 
+    if rank == args.rank_index:
+        total_params = (
+            count_params(segment_model)
+            + count_params(sdf_model)
+            + count_params(boundary_model)
+            + count_params(gating_model)
+            + count_params(loss_fn)
+        )
+        print(f"Total params: {total_params / 1e6:.2f} M")
+
     #记录训练开始时间，用于最后计算总耗时。
     since = time.time()
     #用作计数器（在每个 epoch 开始处递增），用于决定何时打印/记录信息
@@ -214,6 +227,7 @@ if __name__ == '__main__':
     best_result = 'Result1'
     #记录验证集上最佳评估指标的列表（初始化为 0）
     best_val_eval_list = [0 for i in range(4)]
+    printed_memory = False
 
     for epoch in range(args.num_epochs):#200
 
@@ -250,6 +264,8 @@ if __name__ == '__main__':
         dataset_train_unsup = iter(dataloaders['train_unsup'])
 
         for i in range(num_batches['train_sup']):
+            if rank == args.rank_index and not printed_memory:
+                torch.cuda.reset_peak_memory_stats()
 
             #无监督---------------------------------------
             #从无监督 DataLoader 的迭代器中取下一批无标签数据
@@ -285,6 +301,11 @@ if __name__ == '__main__':
             loss_train_unsup = loss_train_unsup * unsup_weight
             loss_train_unsup.backward(retain_graph=True) #保留计算图以便后续反向传播，本循环在同一前向图上要进行两次 backward
             torch.cuda.empty_cache()
+
+            if rank == args.rank_index and not printed_memory:
+                torch.cuda.synchronize()
+                print(f"Memory Footprint (peak): {torch.cuda.max_memory_allocated() / 1024**3:.2f} GB")
+                printed_memory = True
 
             #有监督---------------------------------------
             #从有监督 DataLoader 的迭代器中取下一批有标签数据

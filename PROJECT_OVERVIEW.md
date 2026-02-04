@@ -99,3 +99,11 @@ assert isinstance(feat, torch.Tensor) and isinstance(pred, torch.Tensor)
 
 
 文件已生成：`PROJECT_OVERVIEW.md`（仓库根） — 如果你希望我把这份文档改成中英对照并列显示、或扩展为更详细的开发者 Guide（包含 DDP 调试范例与常见错误排查），告诉我我会继续完善。
+
+日志：
+2.1.1增加打印参数量
+新增 count_params 辅助函数。
+在模型/优化器初始化后，打印一次总可训练参数量（M）。
+在训练开始的第一个迭代中，重置并统计一次 GPU 峰值显存（GB），只打印一次。
+
+
