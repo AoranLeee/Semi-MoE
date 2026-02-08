@@ -216,103 +216,15 @@ class UNetDecoder(nn.Module):
         return d2, d1
 
 
-class SharedUNetMultiTask(nn.Module):
-    def __init__(self, in_channels=3, num_classes=1):
-        super(SharedUNetMultiTask, self).__init__()
-        self.encoder = UNetEncoder(in_channels=in_channels)
-        self.seg_decoder = UNetDecoder(num_classes=num_classes)
-        self.sdf_decoder = UNetDecoder(num_classes=1)
-        self.bnd_decoder = UNetDecoder(num_classes=num_classes)
-
-    def forward(self, x, return_all=False):
-        features = self.encoder(x)
-        seg_feat, seg_out = self.seg_decoder(*features)
-        sdf_feat, sdf_out = self.sdf_decoder(*features)
-        bnd_feat, bnd_out = self.bnd_decoder(*features)
-
-        #默认只返回 seg，是为了兼容单任务训练流程
-        #return_all=True 用于多任务 / 半监督 / MoE 训练
-        if return_all:
-            return {
-                "seg": (seg_feat, seg_out),
-                "sdf": (sdf_feat, sdf_out),
-                "bnd": (bnd_feat, bnd_out),
-            }
-        return seg_feat, seg_out
-
-    def forward_all(self, x):
-        features = self.encoder(x)
-        seg_feat, seg_out = self.seg_decoder(*features)
-        sdf_feat, sdf_out = self.sdf_decoder(*features)
-        bnd_feat, bnd_out = self.bnd_decoder(*features)
-        return {
-            "seg": (seg_feat, seg_out),
-            "sdf": (sdf_feat, sdf_out),
-            "bnd": (bnd_feat, bnd_out),
-        }
-
-
 class U_Net(nn.Module):
     def __init__(self, in_channels=3, num_classes=1):
         super(U_Net, self).__init__()
-
-        self.Maxpool = nn.MaxPool2d(kernel_size=2, stride=2)
-
-        self.Conv1 = conv_block(ch_in=in_channels, ch_out=64)
-        self.Conv2 = conv_block(ch_in=64, ch_out=128)
-        self.Conv3 = conv_block(ch_in=128, ch_out=256)
-        self.Conv4 = conv_block(ch_in=256, ch_out=512)
-        self.Conv5 = conv_block(ch_in=512, ch_out=1024)
-
-        self.Up5 = up_conv(ch_in=1024, ch_out=512)
-        self.Up_conv5 = conv_block(ch_in=1024, ch_out=512)
-
-        self.Up4 = up_conv(ch_in=512, ch_out=256)
-        self.Up_conv4 = conv_block(ch_in=512, ch_out=256)
-
-        self.Up3 = up_conv(ch_in=256, ch_out=128)
-        self.Up_conv3 = conv_block(ch_in=256, ch_out=128)
-
-        self.Up2 = up_conv(ch_in=128, ch_out=64)
-        self.Up_conv2 = conv_block(ch_in=128, ch_out=64)
-
-        self.Conv_1x1 = nn.Conv2d(64, num_classes, kernel_size=1, stride=1, padding=0)
+        self.encoder = UNetEncoder(in_channels=in_channels)
+        self.decoder = UNetDecoder(num_classes=num_classes)
 
     def forward(self, x):
-        # encoding path
-        x1 = self.Conv1(x)
-
-        x2 = self.Maxpool(x1)
-        x2 = self.Conv2(x2)
-
-        x3 = self.Maxpool(x2)
-        x3 = self.Conv3(x3)
-
-        x4 = self.Maxpool(x3)
-        x4 = self.Conv4(x4)
-
-        x5 = self.Maxpool(x4)
-        x5 = self.Conv5(x5)
-
-        # decoding + concat path
-        d5 = self.Up5(x5)
-        d5 = torch.cat((x4, d5), dim=1)
-
-        d5 = self.Up_conv5(d5)
-
-        d4 = self.Up4(d5)
-        d4 = torch.cat((x3, d4), dim=1)
-        d4 = self.Up_conv4(d4)
-
-        d3 = self.Up3(d4)
-        d3 = torch.cat((x2, d3), dim=1)
-        d3 = self.Up_conv3(d3)
-
-        d2 = self.Up2(d3)
-        d2 = torch.cat((x1, d2), dim=1)
-        d2 = self.Up_conv2(d2)
-
-        d1 = self.Conv_1x1(d2)
+        x1, x2, x3, x4, x5 = self.encoder(x)
+        d2, d1 = self.decoder(x1, x2, x3, x4, x5)
         return d2, d1
         # return d1
 
@@ -547,10 +459,18 @@ def unet(in_channels, num_classes):
     init_weights(model, 'kaiming')
     return model
 
-def unet_shared(in_channels, num_classes):
-    model = SharedUNetMultiTask(in_channels, num_classes)
+
+def create_unet_encoder(in_channels):
+    model = UNetEncoder(in_channels=in_channels)
     init_weights(model, 'kaiming')
     return model
+
+
+def create_unet_decoder(num_classes):
+    model = UNetDecoder(num_classes=num_classes)
+    init_weights(model, 'kaiming')
+    return model
+
 
 def r2_unet(in_channels, num_classes):
     model = R2U_Net(in_channels, num_classes)

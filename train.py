@@ -4,6 +4,7 @@ import torch.optim as optim
 from torch.optim import lr_scheduler
 from torch.utils.data import DataLoader
 from models.getnetwork import get_network
+from models.networks_2d.unet import create_unet_encoder, create_unet_decoder
 import argparse
 import time
 import os
@@ -46,6 +47,14 @@ def create_model(network, in_channels, num_classes, **kwargs):
     #返回 (features, logits)
     model = get_network(network, in_channels, num_classes, **kwargs).cuda()
     return DistributedDataParallel(model, device_ids=[args.local_rank])
+
+def create_encoder(in_channels):
+    encoder = create_unet_encoder(in_channels).cuda()
+    return DistributedDataParallel(encoder, device_ids=[args.local_rank])
+
+def create_decoder(num_classes):
+    decoder = create_unet_decoder(num_classes).cuda()
+    return DistributedDataParallel(decoder, device_ids=[args.local_rank])
 
 def init_seeds(seed):
     torch.manual_seed(seed)
@@ -193,9 +202,30 @@ if __name__ == '__main__':
     num_batches = {'train_sup': len(dataloaders['train_sup']), 'train_unsup': len(dataloaders['train_unsup']), 'val': len(dataloaders['val'])}
 
     #输入通道数为 cfg['IN_CHANNELS']，输出通道为 cfg['NUM_CLASSES']（分割类别数）
-    segment_model = create_model(args.network, cfg['IN_CHANNELS'], cfg['NUM_CLASSES'])
-    sdf_model = create_model(args.network, cfg['IN_CHANNELS'], 1)
-    boundary_model = create_model(args.network, cfg['IN_CHANNELS'], cfg['NUM_CLASSES'])
+    shared_encoder = None
+    seg_decoder = None
+    sdf_decoder = None
+    bnd_decoder = None
+    if args.network == 'unet':
+        segment_model = create_model('unet', cfg['IN_CHANNELS'], cfg['NUM_CLASSES'])
+        sdf_model = create_model('unet', cfg['IN_CHANNELS'], 1)
+        boundary_model = create_model('unet', cfg['IN_CHANNELS'], cfg['NUM_CLASSES'])
+        shared_encoder = None
+    elif args.network == 'unet_shared':
+        shared_encoder = create_encoder(cfg['IN_CHANNELS'])
+        seg_decoder = create_decoder(cfg['NUM_CLASSES'])
+        sdf_decoder = create_decoder(1)
+        bnd_decoder = create_decoder(cfg['NUM_CLASSES'])
+        segment_model = None
+        sdf_model = None
+        boundary_model = None
+        if rank == args.rank_index:
+            enc_ids = [id(p) for p in shared_encoder.module.parameters()]
+            print(f"Shared encoder param count: {len(enc_ids)}")
+            enc_id_set = set(enc_ids)
+            decoders = [seg_decoder.module, sdf_decoder.module, bnd_decoder.module]
+            for dec in decoders:
+                assert not any(id(p) in enc_id_set for p in dec.parameters()), "Decoder contains encoder parameters"
     #输入的是第一层特征图，通道数为64；一共三个任务，所以乘3，和IN_CHANNELS其实没关系
     gating_model = create_model(args.gating_network, cfg['IN_CHANNELS'] * 64, cfg['NUM_CLASSES'])
 
@@ -314,9 +344,15 @@ if __name__ == '__main__':
             optimizer5.zero_grad()
         
             #前向传播：通过三个模型分别计算特征feat和分割预测 logits的pred
-            feat_unsup1, pred_train_unsup1 = segment_model(img_train_unsup1)
-            feat_unsup2, pred_train_unsup2 = sdf_model(img_train_unsup1)
-            feat_unsup3, pred_train_unsup3 = boundary_model(img_train_unsup1)
+            if args.network == 'unet':
+                feat_unsup1, pred_train_unsup1 = segment_model(img_train_unsup1)
+                feat_unsup2, pred_train_unsup2 = sdf_model(img_train_unsup1)
+                feat_unsup3, pred_train_unsup3 = boundary_model(img_train_unsup1)
+            elif args.network == 'unet_shared':
+                features = shared_encoder(img_train_unsup1)
+                feat_unsup1, pred_train_unsup1 = seg_decoder(*features)
+                feat_unsup2, pred_train_unsup2 = sdf_decoder(*features)
+                feat_unsup3, pred_train_unsup3 = bnd_decoder(*features)
 
             #在 channel 维度上拼接三路特征，作为 gating 网络的输入
             gating_unsup_input = torch.cat([feat_unsup1, feat_unsup2, feat_unsup3], dim=1)
@@ -352,9 +388,15 @@ if __name__ == '__main__':
             boundary_train_sup = sup_index['boundary'].cuda()
  
             #前向传播
-            feat_sup1, pred_train_sup1 = segment_model(img_train_sup1)
-            feat_sup2, pred_train_sup2 = sdf_model(img_train_sup1)
-            feat_sup3, pred_train_sup3 = boundary_model(img_train_sup1)
+            if args.network == 'unet':
+                feat_sup1, pred_train_sup1 = segment_model(img_train_sup1)
+                feat_sup2, pred_train_sup2 = sdf_model(img_train_sup1)
+                feat_sup3, pred_train_sup3 = boundary_model(img_train_sup1)
+            elif args.network == 'unet_shared':
+                features = shared_encoder(img_train_sup1)
+                feat_sup1, pred_train_sup1 = seg_decoder(*features)
+                feat_sup2, pred_train_sup2 = sdf_decoder(*features)
+                feat_sup3, pred_train_sup3 = bnd_decoder(*features)
 
             #拼接三路特征，作为 gating 网络的输入
             gating_sup_input = torch.cat([feat_sup1, feat_sup2, feat_sup3], dim=1)
@@ -466,9 +508,15 @@ if __name__ == '__main__':
                     optimizer4.zero_grad()
                     optimizer5.zero_grad()
                
-                    feat1, outputs_val1 = segment_model(inputs_val1)
-                    feat2, outputs_val2 = sdf_model(inputs_val1)
-                    feat3, outputs_val3 = boundary_model(inputs_val1)
+                    if args.network == 'unet':
+                        feat1, outputs_val1 = segment_model(inputs_val1)
+                        feat2, outputs_val2 = sdf_model(inputs_val1)
+                        feat3, outputs_val3 = boundary_model(inputs_val1)
+                    elif args.network == 'unet_shared':
+                        features = shared_encoder(inputs_val1)
+                        feat1, outputs_val1 = seg_decoder(*features)
+                        feat2, outputs_val2 = sdf_decoder(*features)
+                        feat3, outputs_val3 = bnd_decoder(*features)
                     gating_input = torch.cat([feat1, feat2, feat3], dim=1)
                     val_out1, val_out2, val_out3 = gating_model(gating_input)
                     if rank == args.rank_index:
