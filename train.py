@@ -69,6 +69,11 @@ def segmentation_entropy(logits, eps=1e-8):
     entropy = -torch.sum(probs * torch.log(probs + eps), dim=1)  # [B, H, W]
     return entropy.mean()
 
+def get_shared_encoder(model):
+    if hasattr(model, "module"):
+        model = model.module
+    return getattr(model, "encoder", None)
+
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
@@ -375,8 +380,8 @@ if __name__ == '__main__':
             loss_train_sup = loss_fn(loss_train_sup1, loss_train_sup2, loss_train_sup3)
 
             if count_iter % args.display_iter == 0 and rank == args.rank_index and grad_enc_seg is None:
-                encoder = segment_model.module.encoder if hasattr(segment_model, "module") else segment_model.encoder
-                enc_params = [p for p in encoder.parameters() if p.requires_grad]
+                encoder = get_shared_encoder(segment_model)
+                enc_params = [p for p in encoder.parameters() if p.requires_grad] if encoder is not None else []
                 if len(enc_params) > 0:
                     def _grad_l2_norm(loss):
                         grads = torch.autograd.grad(loss, enc_params, retain_graph=True, allow_unused=True)
@@ -437,8 +442,8 @@ if __name__ == '__main__':
                 print('| Epoch {}/{}'.format(epoch + 1, args.num_epochs).ljust(print_num_minus, ' '), '|')
                 train_epoch_loss_sup1, train_epoch_loss_sup2, train_epoch_loss_sup3, train_epoch_loss_unsup, train_epoch_loss = print_train_loss(train_loss_sup_1, train_loss_sup_2, train_loss_sup_3, train_loss_unsup, train_loss, num_batches, print_num, print_num_minus)
                 train_eval_list1, train_m_jc1 = print_train_eval_sup(cfg['NUM_CLASSES'], score_list_train1, mask_list_train, print_num_minus)
-                encoder = segment_model.module.encoder if hasattr(segment_model, "module") else segment_model.encoder
-                feature_stats = encoder.get_feature_stats()
+                encoder = get_shared_encoder(segment_model)
+                feature_stats = encoder.get_feature_stats() if encoder is not None else {}
                 print(feature_stats)
                 torch.cuda.empty_cache()
 

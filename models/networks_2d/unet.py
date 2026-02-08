@@ -224,12 +224,32 @@ class SharedUNetMultiTask(nn.Module):
         self.sdf_decoder = UNetDecoder(num_classes=1)
         self.bnd_decoder = UNetDecoder(num_classes=num_classes)
 
-    def forward(self, x):
+    def forward(self, x, return_all=False):
         features = self.encoder(x)
         seg_feat, seg_out = self.seg_decoder(*features)
         sdf_feat, sdf_out = self.sdf_decoder(*features)
         bnd_feat, bnd_out = self.bnd_decoder(*features)
-        return seg_feat, seg_out, sdf_feat, sdf_out, bnd_feat, bnd_out
+
+        #默认只返回 seg，是为了兼容单任务训练流程
+        #return_all=True 用于多任务 / 半监督 / MoE 训练
+        if return_all:
+            return {
+                "seg": (seg_feat, seg_out),
+                "sdf": (sdf_feat, sdf_out),
+                "bnd": (bnd_feat, bnd_out),
+            }
+        return seg_feat, seg_out
+
+    def forward_all(self, x):
+        features = self.encoder(x)
+        seg_feat, seg_out = self.seg_decoder(*features)
+        sdf_feat, sdf_out = self.sdf_decoder(*features)
+        bnd_feat, bnd_out = self.bnd_decoder(*features)
+        return {
+            "seg": (seg_feat, seg_out),
+            "sdf": (sdf_feat, sdf_out),
+            "bnd": (bnd_feat, bnd_out),
+        }
 
 
 class U_Net(nn.Module):
