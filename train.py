@@ -237,19 +237,21 @@ if __name__ == '__main__':
     loss_fn = MultiTaskLoss().cuda()
 
     #为 segment_model 创建一个 SGD 优化器
-    optimizer1 = optim.SGD(segment_model.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=5 * 10 ** args.wd)
-    #为 optimizer1 创建一个 StepLR 学习率调度器
+    if args.network == 'unet':
+        optimizer1 = optim.SGD(segment_model.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=5 * 10 ** args.wd)
+        optimizer2 = optim.SGD(sdf_model.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=5 * 10 ** args.wd)
+        optimizer3 = optim.SGD(boundary_model.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=5 * 10 ** args.wd)
+    elif args.network == 'unet_shared':
+        optimizer1 = optim.SGD(list(shared_encoder.parameters()) + list(seg_decoder.parameters()), lr=args.lr, momentum=args.momentum, weight_decay=5 * 10 ** args.wd)
+        optimizer2 = optim.SGD(sdf_decoder.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=5 * 10 ** args.wd)
+        optimizer3 = optim.SGD(bnd_decoder.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=5 * 10 ** args.wd)
+
     exp_lr_scheduler1 = lr_scheduler.StepLR(optimizer1, step_size=args.step_size, gamma=args.gamma)
-    #将一个预热（warmup）调度器包装到 optimizer1 上
     scheduler_warmup1 = GradualWarmupScheduler(optimizer1, multiplier=1.0, total_epoch=args.warm_up_duration, after_scheduler=exp_lr_scheduler1)
 
-    #为 sdf_model 创建一个 SGD 优化器
-    optimizer2 = optim.SGD(sdf_model.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=5 * 10 ** args.wd)
     exp_lr_scheduler2 = lr_scheduler.StepLR(optimizer2, step_size=args.step_size, gamma=args.gamma)
     scheduler_warmup2 = GradualWarmupScheduler(optimizer2, multiplier=1.0, total_epoch=args.warm_up_duration, after_scheduler=exp_lr_scheduler2)
 
-    #为 boundary_model 创建一个 SGD 优化器
-    optimizer3 = optim.SGD(boundary_model.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=5 * 10 ** args.wd)
     exp_lr_scheduler3 = lr_scheduler.StepLR(optimizer3, step_size=args.step_size, gamma=args.gamma)
     scheduler_warmup3 = GradualWarmupScheduler(optimizer3, multiplier=1.0, total_epoch=args.warm_up_duration, after_scheduler=exp_lr_scheduler3)
 
@@ -262,13 +264,23 @@ if __name__ == '__main__':
     optimizer5 = optim.Adam(loss_fn.parameters(), 0.05, weight_decay=5 * 10 ** args.wd)
 
     if rank == args.rank_index:
-        total_params = (
-            count_params(segment_model)
-            + count_params(sdf_model)
-            + count_params(boundary_model)
-            + count_params(gating_model)
-            + count_params(loss_fn)
-        )
+        if args.network == 'unet':
+            total_params = (
+                count_params(segment_model)
+                + count_params(sdf_model)
+                + count_params(boundary_model)
+                + count_params(gating_model)
+                + count_params(loss_fn)
+            )
+        elif args.network == 'unet_shared':
+            total_params = (
+                count_params(shared_encoder)
+                + count_params(seg_decoder)
+                + count_params(sdf_decoder)
+                + count_params(bnd_decoder)
+                + count_params(gating_model)
+                + count_params(loss_fn)
+            )
         print(f"Total params: {total_params / 1e6:.2f} M")
 
     #记录训练开始时间，用于最后计算总耗时。
@@ -305,9 +317,15 @@ if __name__ == '__main__':
         #设置 epoch 号，以便 DistributedSampler 在每个 epoch 开始时打乱数据
         dataloaders['train_sup'].sampler.set_epoch(epoch)
         dataloaders['train_unsup'].sampler.set_epoch(epoch)
-        segment_model.train()
-        sdf_model.train()
-        boundary_model.train()
+        if args.network == 'unet':
+            segment_model.train()
+            sdf_model.train()
+            boundary_model.train()
+        elif args.network == 'unet_shared':
+            shared_encoder.train()
+            seg_decoder.train()
+            sdf_decoder.train()
+            bnd_decoder.train()
         gating_model.train()
 
         #初始化累加的 epoch 损失值
@@ -420,9 +438,11 @@ if __name__ == '__main__':
 
             #使用 MultiTaskLoss 将三个子损失组合成一个标量有监督损失
             loss_train_sup = loss_fn(loss_train_sup1, loss_train_sup2, loss_train_sup3)
-
             if count_iter % args.display_iter == 0 and rank == args.rank_index and grad_enc_seg is None:
-                encoder = get_shared_encoder(segment_model)
+                if args.network == 'unet_shared':
+                    encoder = shared_encoder.module if hasattr(shared_encoder, 'module') else shared_encoder
+                else:
+                    encoder = get_shared_encoder(segment_model)
                 enc_params = [p for p in encoder.parameters() if p.requires_grad] if encoder is not None else []
                 if len(enc_params) > 0:
                     def _grad_l2_norm(loss):
@@ -433,7 +453,7 @@ if __name__ == '__main__':
                                 total += g.pow(2).sum()
                         return total.sqrt().item()
 
-                    #加权后的 task loss（真实优化贡献）
+                    #task loss
                     weighted_seg = torch.exp(-loss_fn.sigma1) * loss_train_sup1
                     weighted_sdf = 0.5 * torch.exp(-loss_fn.sigma2) * loss_train_sup2
                     weighted_bnd = torch.exp(-loss_fn.sigma3) * loss_train_sup3
@@ -484,15 +504,24 @@ if __name__ == '__main__':
                 print('| Epoch {}/{}'.format(epoch + 1, args.num_epochs).ljust(print_num_minus, ' '), '|')
                 train_epoch_loss_sup1, train_epoch_loss_sup2, train_epoch_loss_sup3, train_epoch_loss_unsup, train_epoch_loss = print_train_loss(train_loss_sup_1, train_loss_sup_2, train_loss_sup_3, train_loss_unsup, train_loss, num_batches, print_num, print_num_minus)
                 train_eval_list1, train_m_jc1 = print_train_eval_sup(cfg['NUM_CLASSES'], score_list_train1, mask_list_train, print_num_minus)
+                if args.network == 'unet_shared':
+                    encoder = shared_encoder.module if hasattr(shared_encoder, 'module') else shared_encoder
+            else:
                 encoder = get_shared_encoder(segment_model)
                 feature_stats = encoder.get_feature_stats() if encoder is not None else {}
                 print(feature_stats)
                 torch.cuda.empty_cache()
 
             with torch.no_grad():
-                segment_model.eval()
-                sdf_model.eval()
-                boundary_model.eval()
+                if args.network == 'unet':
+                    segment_model.eval()
+                    sdf_model.eval()
+                    boundary_model.eval()
+                elif args.network == 'unet_shared':
+                    shared_encoder.eval()
+                    seg_decoder.eval()
+                    sdf_decoder.eval()
+                    bnd_decoder.eval()
                 gating_model.eval()
                 for i, data in enumerate(dataloaders['val']):
 
@@ -559,12 +588,21 @@ if __name__ == '__main__':
                 if rank == args.rank_index:
                     val_epoch_loss_sup1, val_epoch_loss_sup2, val_epoch_loss_sup3 = print_val_loss(val_loss_sup_1, val_loss_sup_2, val_loss_sup_3, num_batches, print_num, print_num_minus)
                     val_eval_list1, val_m_jc1 = print_val_eval_sup(cfg['NUM_CLASSES'], score_list_val1, mask_list_val, print_num_minus)
-                    save_models = {
-                        'segment_model': segment_model,
-                        'sdf_model': sdf_model,
-                        'boundary_model': boundary_model,
-                        'gating_model': gating_model
-                    }
+                    if args.network == 'unet':
+                        save_models = {
+                            'segment_model': segment_model,
+                            'sdf_model': sdf_model,
+                            'boundary_model': boundary_model,
+                            'gating_model': gating_model
+                        }
+                    elif args.network == 'unet_shared':
+                        save_models = {
+                            'shared_encoder': shared_encoder,
+                            'seg_decoder': seg_decoder,
+                            'sdf_decoder': sdf_decoder,
+                            'bnd_decoder': bnd_decoder,
+                            'gating_model': gating_model
+                        }
                     best_val_eval_list = save_val_best_sup_2d(cfg['NUM_CLASSES'], best_val_eval_list, save_models, score_list_val1, name_list_val, val_eval_list1, path_trained_models, path_seg_results, cfg['PALETTE'], 'MoE')
                     torch.cuda.empty_cache()
 
