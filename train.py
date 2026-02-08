@@ -77,7 +77,7 @@ if __name__ == '__main__':
     parser.add_argument('--wd', default=-5, type=float, help='weight decay pow')
 
     parser.add_argument('-i', '--display_iter', default=5, type=int)#控制多少次迭代打印一次训练中间信息
-    parser.add_argument('-n', '--network', default='unet', type=str)#主分割模型名称
+    parser.add_argument('-n', '--network', default='unet_shared', type=str)#主分割模型名称
     #Gating 网络名称
     parser.add_argument('-gn', '--gating_network', default='multi_gating_attention', type=str)
     parser.add_argument('--local_rank', default=0, type=int)

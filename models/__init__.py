@@ -1,6 +1,6 @@
 # 2d
 from .networks_2d.xnet import XNet, XNet_1_1_m, XNet_1_2_m, XNet_2_1_m, XNet_3_2_m, XNet_2_3_m, XNet_3_3_m, XNet_sb
-from .networks_2d.unet import unet, r2_unet, attention_unet
+from .networks_2d.unet import unet, unet_shared, r2_unet, attention_unet
 from .networks_2d.gating_net import multi_gating_attention
 from .networks_2d.unet_plusplus import unet_plusplus
 from .networks_2d.hrnet import hrnet18, hrnet32, hrnet48, hrnet64
