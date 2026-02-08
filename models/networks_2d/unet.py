@@ -149,6 +149,7 @@ class UNetEncoder(nn.Module):
         self.Conv3 = conv_block(ch_in=128, ch_out=256)
         self.Conv4 = conv_block(ch_in=256, ch_out=512)
         self.Conv5 = conv_block(ch_in=512, ch_out=1024)
+        self.last_features = None
 
     def forward(self, x):
         # encoding path
@@ -161,7 +162,19 @@ class UNetEncoder(nn.Module):
         x4 = self.Conv4(x4)
         x5 = self.Maxpool(x4)
         x5 = self.Conv5(x5)
+        self.last_features = [x1, x2, x3, x4, x5]
         return x1, x2, x3, x4, x5
+
+    def get_feature_stats(self):
+        if self.last_features is None:
+            return {}
+        stats = {}
+        for idx, feat in enumerate(self.last_features, start=1):
+            mean_c = feat.mean(dim=(0, 2, 3))
+            std_c = feat.std(dim=(0, 2, 3), unbiased=False)
+            stats[f"enc_l{idx}_mean"] = mean_c.mean().item()
+            stats[f"enc_l{idx}_std"] = std_c.mean().item()
+        return stats
 
 
 class UNetDecoder(nn.Module):

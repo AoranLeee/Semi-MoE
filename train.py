@@ -1,4 +1,5 @@
 import torch
+import torch.nn.functional as F
 import torch.optim as optim
 from torch.optim import lr_scheduler
 from torch.utils.data import DataLoader
@@ -19,6 +20,7 @@ from config.warmup_config.warmup import GradualWarmupScheduler
 from config.train_test_config.train_test_config import print_train_loss, print_val_loss, print_train_eval_sup, print_val_eval_sup, save_val_best_sup_2d, print_best_sup
 from warnings import simplefilter
 from aux_loss import imbalance_diceLoss, sdf_loss, MultiTaskLoss
+from csv_logger import CSVLogger
 
 # 忽略 FutureWarning（减少训练输出警告噪声）
 simplefilter(action='ignore', category=FutureWarning)
@@ -58,6 +60,15 @@ def init_seeds(seed):
 def count_params(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
+def segmentation_entropy(logits, eps=1e-8):
+    """
+    logits: Tensor, shape [B, C, H, W]
+    return: scalar entropy averaged over batch + spatial dims
+    """
+    probs = F.softmax(logits, dim=1)
+    entropy = -torch.sum(probs * torch.log(probs + eps), dim=1)  # [B, H, W]
+    return entropy.mean()
+
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
@@ -80,6 +91,7 @@ if __name__ == '__main__':
     parser.add_argument('-n', '--network', default='unet_shared', type=str)#主分割模型名称
     #Gating 网络名称
     parser.add_argument('-gn', '--gating_network', default='multi_gating_attention', type=str)
+    parser.add_argument('--exp_name', default='exp_shared_encoder_baseline', type=str)
     parser.add_argument('--local_rank', default=0, type=int)
     parser.add_argument('--rank_index', default=0, help='0, 1, 2, 3')#主进程的 rank，一般设为 0
     parser.add_argument('--visdom_port', default=16672)
@@ -92,6 +104,12 @@ if __name__ == '__main__':
     rank = torch.distributed.get_rank()    #获取当前进程在全局通信中的 rank
     ngpus_per_node = torch.cuda.device_count()    #返回当前主机可见的 GPU 数量
     init_seeds(1)    #调用自定义的随机种子初始化函数
+
+    logger = None
+    if rank == args.rank_index:
+        log_dir = "logs"
+        os.makedirs(log_dir, exist_ok=True)
+        logger = CSVLogger(os.path.join(log_dir, f"{args.exp_name}.csv"))
 
     dataset_name = args.dataset_name
     #调用配置函数 dataset_cfg（在 dataset_cfg.py 中）来加载与所选数据集相关的常量/路径字典
@@ -228,6 +246,12 @@ if __name__ == '__main__':
     #记录验证集上最佳评估指标的列表（初始化为 0）
     best_val_eval_list = [0 for i in range(4)]
     printed_memory = False
+    grad_enc_seg = None
+    grad_enc_sdf = None
+    grad_enc_bnd = None
+    seg_entropy_sum = 0.0
+    seg_entropy_count = 0
+    feature_stats = {}
 
     for epoch in range(args.num_epochs):#200
 
@@ -235,6 +259,13 @@ if __name__ == '__main__':
         #每隔 display_iter（5）个 epoch 记录一次时间
         if (count_iter - 1) % args.display_iter == 0:
             begin_time = time.time()
+        if count_iter % args.display_iter == 0:
+            grad_enc_seg = None
+            grad_enc_sdf = None
+            grad_enc_bnd = None
+            seg_entropy_sum = 0.0
+            seg_entropy_count = 0
+            feature_stats = {}
 
         #设置 epoch 号，以便 DistributedSampler 在每个 epoch 开始时打乱数据
         dataloaders['train_sup'].sampler.set_epoch(epoch)
@@ -342,6 +373,28 @@ if __name__ == '__main__':
 
             #使用 MultiTaskLoss 将三个子损失组合成一个标量有监督损失
             loss_train_sup = loss_fn(loss_train_sup1, loss_train_sup2, loss_train_sup3)
+
+            if count_iter % args.display_iter == 0 and rank == args.rank_index and grad_enc_seg is None:
+                encoder = segment_model.module.encoder if hasattr(segment_model, "module") else segment_model.encoder
+                enc_params = [p for p in encoder.parameters() if p.requires_grad]
+                if len(enc_params) > 0:
+                    def _grad_l2_norm(loss):
+                        grads = torch.autograd.grad(loss, enc_params, retain_graph=True, allow_unused=True)
+                        total = torch.zeros(1, device=loss.device)
+                        for g in grads:
+                            if g is not None:
+                                total += g.pow(2).sum()
+                        return total.sqrt().item()
+
+                    #加权后的 task loss（真实优化贡献）
+                    weighted_seg = torch.exp(-loss_fn.sigma1) * loss_train_sup1
+                    weighted_sdf = 0.5 * torch.exp(-loss_fn.sigma2) * loss_train_sup2
+                    weighted_bnd = torch.exp(-loss_fn.sigma3) * loss_train_sup3
+
+                    grad_enc_seg = _grad_l2_norm(weighted_seg)
+                    grad_enc_sdf = _grad_l2_norm(weighted_sdf)
+                    grad_enc_bnd = _grad_l2_norm(weighted_bnd)
+                    print(f"GradEnc seg: {grad_enc_seg:.6f}, sdf: {grad_enc_sdf:.6f}, bnd: {grad_enc_bnd:.6f}")
    
             loss_train_sup.backward()
 
@@ -384,6 +437,9 @@ if __name__ == '__main__':
                 print('| Epoch {}/{}'.format(epoch + 1, args.num_epochs).ljust(print_num_minus, ' '), '|')
                 train_epoch_loss_sup1, train_epoch_loss_sup2, train_epoch_loss_sup3, train_epoch_loss_unsup, train_epoch_loss = print_train_loss(train_loss_sup_1, train_loss_sup_2, train_loss_sup_3, train_loss_unsup, train_loss, num_batches, print_num, print_num_minus)
                 train_eval_list1, train_m_jc1 = print_train_eval_sup(cfg['NUM_CLASSES'], score_list_train1, mask_list_train, print_num_minus)
+                encoder = segment_model.module.encoder if hasattr(segment_model, "module") else segment_model.encoder
+                feature_stats = encoder.get_feature_stats()
+                print(feature_stats)
                 torch.cuda.empty_cache()
 
             with torch.no_grad():
@@ -410,6 +466,11 @@ if __name__ == '__main__':
                     feat3, outputs_val3 = boundary_model(inputs_val1)
                     gating_input = torch.cat([feat1, feat2, feat3], dim=1)
                     val_out1, val_out2, val_out3 = gating_model(gating_input)
+                    if rank == args.rank_index:
+                        seg_entropy = segmentation_entropy(outputs_val1)
+                        seg_entropy_sum += seg_entropy.item()
+                        seg_entropy_count += 1
+                        print(f"Val Seg Entropy: {seg_entropy.item():.6f}")
 
                     torch.cuda.empty_cache()
 
@@ -453,6 +514,21 @@ if __name__ == '__main__':
                     }
                     best_val_eval_list = save_val_best_sup_2d(cfg['NUM_CLASSES'], best_val_eval_list, save_models, score_list_val1, name_list_val, val_eval_list1, path_trained_models, path_seg_results, cfg['PALETTE'], 'MoE')
                     torch.cuda.empty_cache()
+
+                    if logger is not None:
+                        if seg_entropy_count > 0:
+                            seg_entropy_avg = seg_entropy_sum / seg_entropy_count
+                        else:
+                            seg_entropy_avg = float("nan")
+                        row = {"epoch": epoch + 1}
+                        for idx in range(1, 6):
+                            row[f"enc_l{idx}_mean"] = feature_stats.get(f"enc_l{idx}_mean", float("nan"))
+                            row[f"enc_l{idx}_std"] = feature_stats.get(f"enc_l{idx}_std", float("nan"))
+                        row["seg_entropy"] = seg_entropy_avg
+                        row["grad_enc_seg"] = grad_enc_seg if grad_enc_seg is not None else float("nan")
+                        row["grad_enc_sdf"] = grad_enc_sdf if grad_enc_sdf is not None else float("nan")
+                        row["grad_enc_bnd"] = grad_enc_bnd if grad_enc_bnd is not None else float("nan")
+                        logger.log(row)
 
                     print('-' * print_num)
                     print('| Epoch Time: {:.4f}s'.format((time.time() - begin_time) / args.display_iter).ljust(
