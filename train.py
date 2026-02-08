@@ -293,6 +293,7 @@ if __name__ == '__main__':
     #记录验证集上最佳评估指标的列表（初始化为 0）
     best_val_eval_list = [0 for i in range(4)]
     printed_memory = False
+    printed_encoder_debug = False
     grad_enc_seg = None
     grad_enc_sdf = None
     grad_enc_bnd = None
@@ -508,8 +509,9 @@ if __name__ == '__main__':
                     encoder = shared_encoder.module if hasattr(shared_encoder, 'module') else shared_encoder
                 else:
                     encoder = get_shared_encoder(segment_model)
-                if encoder is not None:
-                    print(encoder.last_features is None)
+                if encoder is not None and not printed_encoder_debug:
+                    print(f"Encoder last_features updated: {encoder.last_features is not None}")
+                    printed_encoder_debug = True
                 feature_stats = encoder.get_feature_stats() if encoder is not None else {}
                 print(feature_stats)
                 torch.cuda.empty_cache()
