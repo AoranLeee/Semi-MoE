@@ -506,8 +506,10 @@ if __name__ == '__main__':
                 train_eval_list1, train_m_jc1 = print_train_eval_sup(cfg['NUM_CLASSES'], score_list_train1, mask_list_train, print_num_minus)
                 if args.network == 'unet_shared':
                     encoder = shared_encoder.module if hasattr(shared_encoder, 'module') else shared_encoder
-            else:
-                encoder = get_shared_encoder(segment_model)
+                else:
+                    encoder = get_shared_encoder(segment_model)
+                if encoder is not None:
+                    print(encoder.last_features is None)
                 feature_stats = encoder.get_feature_stats() if encoder is not None else {}
                 print(feature_stats)
                 torch.cuda.empty_cache()
@@ -552,7 +554,6 @@ if __name__ == '__main__':
                         seg_entropy = segmentation_entropy(outputs_val1)
                         seg_entropy_sum += seg_entropy.item()
                         seg_entropy_count += 1
-                        print(f"Val Seg Entropy: {seg_entropy.item():.6f}")
 
                     torch.cuda.empty_cache()
 
@@ -588,6 +589,11 @@ if __name__ == '__main__':
                 if rank == args.rank_index:
                     val_epoch_loss_sup1, val_epoch_loss_sup2, val_epoch_loss_sup3 = print_val_loss(val_loss_sup_1, val_loss_sup_2, val_loss_sup_3, num_batches, print_num, print_num_minus)
                     val_eval_list1, val_m_jc1 = print_val_eval_sup(cfg['NUM_CLASSES'], score_list_val1, mask_list_val, print_num_minus)
+                    if seg_entropy_count > 0:
+                        seg_entropy_avg = seg_entropy_sum / seg_entropy_count
+                    else:
+                        seg_entropy_avg = float("nan")
+                    print(f"Val Seg Entropy (avg): {seg_entropy_avg:.6f}")
                     if args.network == 'unet':
                         save_models = {
                             'segment_model': segment_model,
@@ -607,10 +613,6 @@ if __name__ == '__main__':
                     torch.cuda.empty_cache()
 
                     if logger is not None:
-                        if seg_entropy_count > 0:
-                            seg_entropy_avg = seg_entropy_sum / seg_entropy_count
-                        else:
-                            seg_entropy_avg = float("nan")
                         row = {"epoch": epoch + 1}
                         for idx in range(1, 6):
                             row[f"enc_l{idx}_mean"] = feature_stats.get(f"enc_l{idx}_mean", float("nan"))
