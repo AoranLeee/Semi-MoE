@@ -1,0 +1,4 @@
+FEATURE_SELECT:
+  ENABLE: false
+  TYPE: "task_dw"
+  HYBRID_SCALES: []

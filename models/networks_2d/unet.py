@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn import init
+from models.modules.feat_select.multi_scale_task_selector import MultiScaleTaskSelector
 
 
 def init_weights(net, init_type='normal', gain=0.02):
@@ -216,8 +217,12 @@ class UNetDecoder(nn.Module):
         return d2, d1
 
 
+# NOTE:
+# U_Net is single-task version.
+# Do NOT integrate MultiScaleTaskSelector here.
+# Feature selection is handled only in UNetMultiTask.
 class U_Net(nn.Module):
-    def __init__(self, in_channels=3, num_classes=1):
+    def __init__(self, in_channels=3, num_classes=1, cfg=None):
         super(U_Net, self).__init__()
         self.encoder = UNetEncoder(in_channels=in_channels)
         self.decoder = UNetDecoder(num_classes=num_classes)
@@ -227,6 +232,61 @@ class U_Net(nn.Module):
         d2, d1 = self.decoder(x1, x2, x3, x4, x5)
         return d2, d1
         # return d1
+
+
+# Multi-task version with optional feature selector integration.
+class UNetMultiTask(nn.Module):
+    def __init__(self, in_channels=3, num_classes=1, cfg=None):
+        super(UNetMultiTask, self).__init__()
+        self.encoder = UNetEncoder(in_channels=in_channels)
+        self.decoder_seg = UNetDecoder(num_classes=num_classes)
+        self.decoder_sdf = UNetDecoder(num_classes=1)
+        self.decoder_bnd = UNetDecoder(num_classes=num_classes)
+        self.num_tasks = 3
+        self.selector = None
+        fs_cfg = getattr(cfg, "FEATURE_SELECT", None) if cfg is not None else None
+        if fs_cfg is not None:
+            self.use_feat_selector = fs_cfg.ENABLE
+            assert fs_cfg.TYPE in ["task_dw", "hybrid", "expert"], "FEATURE_SELECT.TYPE must be one of [task_dw, hybrid, expert]"
+            if fs_cfg.TYPE == "hybrid" and len(fs_cfg.HYBRID_SCALES) == 0:
+                print("Warning: FEATURE_SELECT.TYPE is 'hybrid' but HYBRID_SCALES is empty.")
+            if self.use_feat_selector:
+                self.selector = MultiScaleTaskSelector(
+                    in_channels_list=[64, 128, 256, 512, 1024],
+                    num_tasks=self.num_tasks,
+                    mode=fs_cfg.TYPE,
+                    hybrid_scales=fs_cfg.HYBRID_SCALES,
+                )
+        else:
+            self.use_feat_selector = False
+
+    def forward(self, x):
+        features = list(self.encoder(x))
+        assert isinstance(features, list), "features must be a list of feature maps"
+        assert len(features) == 5, "features must contain 5 scales (f1..f5)"
+
+        # ---- Task-aware feature selection (template integration) ----
+        if self.use_feat_selector:
+            assert self.selector is not None, "selector must be initialized when USE_FEAT_SELECTOR is True"
+            task_features = self.selector(features)
+        else:
+            # replicate original features for each task
+            task_features = [features for _ in range(self.num_tasks)]
+        assert isinstance(task_features, list), "task_features must be a list"
+        assert len(task_features) == self.num_tasks, "task_features length must match num_tasks"
+
+        out_seg = self.decoder_seg(*task_features[0])
+        if self.num_tasks == 1:
+            return out_seg
+
+        out_sdf = self.decoder_sdf(*task_features[1])
+        out_bnd = self.decoder_bnd(*task_features[2])
+
+        return {
+            "seg": out_seg,
+            "sdf": out_sdf,
+            "bnd": out_bnd,
+        }
 
 
 class R2U_Net(nn.Module):
