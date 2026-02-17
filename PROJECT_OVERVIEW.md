@@ -107,3 +107,36 @@ assert isinstance(feat, torch.Tensor) and isinstance(pred, torch.Tensor)
 在训练开始的第一个迭代中，重置并统计一次 GPU 峰值显存（GB），只打印一次。
 
 
+2.2.1-2.2.8 增加共享编码器和CSV日志工具，记录各尺度数据，增加评判指标
+1. unet.py
+删除 SharedUNetMultiTask 和 unet_shared 工厂函数
+保留并强化拆分：UNetEncoder / UNetDecoder
+U_Net 现在由 UNetEncoder + UNetDecoder 组成，forward 行为保持一致
+新增工厂函数：
+create_unet_encoder(in_channels)
+create_unet_decoder(num_classes)
+encoder/decoder 都进行 kaiming 初始化
+2. getnetwork.py
+移除 unet_shared 分支，保留 unet 及其他网络不变
+3. __init__.py
+删除 unet_shared 导入
+训练逻辑（核心改动）
+4. train.py
+新增 create_encoder / create_decoder（DDP 包装）
+模型创建逻辑分支：
+unet：三套完整模型
+unet_shared：一个 shared_encoder + 三个 decoder（seg/sdf/bnd）
+forward 路径分支：训练/验证都适配 shared encoder
+优化器初始化适配 shared 结构（encoder + seg decoder 绑定在 optimizer1）
+train/eval 模式切换适配 shared 结构
+保存逻辑适配 shared 结构（checkpoint key 改为 shared_encoder/decoders）
+total params 统计适配 shared 结构
+5. 评估与日志统计
+UNetEncoder 增加 last_features 缓存 + get_feature_stats()
+train.py 增加 feature stats、seg entropy、encoder grad norm 记录
+csv_logger.py
+新增 CSVLogger 工具
+CSV 日志集成（日志写入 {exp_name}.csv）
+Seg Entropy 只打印平均值一次（不刷屏）
+Debug 输出只打印一次：Encoder last_features updated: True/False
+完成共享编码器实验、增加日志记录的semi-moe
