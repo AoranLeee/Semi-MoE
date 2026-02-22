@@ -1,5 +1,6 @@
 import sys
 from models import *
+from models.networks_2d.unet import UNetMultiTask
 
 def get_network(network, in_channels, num_classes, **kwargs):
 
@@ -7,6 +8,8 @@ def get_network(network, in_channels, num_classes, **kwargs):
         net = multi_gating_attention(in_channels, num_classes)
     elif network == 'unet':
         net = unet(in_channels, num_classes)
+    elif network == 'unet_multitask':
+        net = UNetMultiTask(in_channels, num_classes, **kwargs)
     elif network == 'unet_plusplus' or network == 'unet++':
         net = unet_plusplus(in_channels, num_classes)
     elif network == 'r2unet':

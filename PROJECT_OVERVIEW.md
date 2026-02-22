@@ -140,3 +140,31 @@ CSV 日志集成（日志写入 {exp_name}.csv）
 Seg Entropy 只打印平均值一次（不刷屏）
 Debug 输出只打印一次：Encoder last_features updated: True/False
 完成共享编码器实验、增加日志记录的semi-moe
+
+2026.2.17 2.3.1增加特征融合基础模块
+1) 训练逻辑（train.py）
+删除原来create_encoder / create_decoder。
+新增调用UNetMultiTask类，实现特征融合模块
+
+2) U-Net 结构（unet.py）
+新增 UNetMultiTask（3 个 decoder，输出 dict，支持 num_tasks==1 单任务回退）。
+集成 MultiScaleTaskSelector（cfg.FEATURE_SELECT 控制），加入断言与 hybrid 警告。
+forward 中新增 task_features 逻辑和一致性校验。
+
+3) Feature Selector 模块（models/modules/feat_select/）
+新增 dwconv.py（DWConv 模块）。
+新增 task_dw_selector.py（TaskDWSelector，保存 last_weight_maps）。
+更新 multi_scale_task_selector.py：
+mode 默认 task_dw
+hybrid_scales 逻辑
+selector 插件点注释
+输入/输出一致性检查
+
+4) 网络注册
+getnetwork.py 移除 unet_shared 分支。
+__init__.py 移除 unet_shared 导入。
+加入UNetMultiTask分支
+
+5) 配置
+新增 default.yaml，加入 FEATURE_SELECT 配置段（默认关闭）。
+下一次加额外参数
