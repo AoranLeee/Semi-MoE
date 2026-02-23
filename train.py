@@ -10,6 +10,7 @@ import time
 import os
 import numpy as np
 import random
+import yaml
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel
 
@@ -121,6 +122,10 @@ if __name__ == '__main__':
     #调用配置函数 dataset_cfg（在 dataset_cfg.py 中）来加载与所选数据集相关的常量/路径字典
     cfg = dataset_cfg(dataset_name)#获取数据集配置字典
 
+    with open('./config/feat_select_config/feat_select_cfg.yaml', 'r') as f:
+        full_cfg = yaml.safe_load(f)
+    feat_cfg = full_cfg['FEATURE_SELECT'] #获取特征选择相关配置字典
+
     print_num = 77 + (cfg['NUM_CLASSES'] - 3) * 14
     print_num_minus = print_num - 2
     print_num_half = int(print_num / 2 - 1)
@@ -196,7 +201,7 @@ if __name__ == '__main__':
     model = UNetMultiTask(
         in_channels=cfg['IN_CHANNELS'],
         num_classes=cfg['NUM_CLASSES'],
-        cfg=cfg
+        cfg=feat_cfg
     ).cuda()
     model = DistributedDataParallel(model, device_ids=[args.local_rank])
     #输入的是第一层特征图，通道数为64；一共三个任务，所以乘3，和IN_CHANNELS其实没关系
@@ -281,13 +286,13 @@ if __name__ == '__main__':
     for epoch in range(args.num_epochs):#200
 
         # ====== 解冻 selector ======
-        if epoch == cfg['FEATURE_SELECT']['WARMUP_EPOCHS']:
+        if epoch == feat_cfg['FEATURE_SELECT']['WARMUP_EPOCHS']:
             print("Unfreezing selector...")
             for p in selector_params:
                 p.requires_grad = True
             optimizer.add_param_group({
                 "params": selector_params,
-                "lr": args.lr * cfg['FEATURE_SELECT']['LR_MULTIPLIER']
+                "lr": args.lr * feat_cfg['FEATURE_SELECT']['LR_MULTIPLIER']
             })
 
         count_iter += 1
