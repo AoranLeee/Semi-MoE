@@ -210,7 +210,36 @@ if __name__ == '__main__':
     loss_fn = MultiTaskLoss().cuda()
 
     #为 model 创建一个 SGD 优化器
-    optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=5 * 10 ** args.wd)
+    # 按参数分组：selector参数和其他参数（encoder+decoder）
+    selector_params = []
+    other_params = []
+
+    for name, param in model.named_parameters():
+        if "selector" in name:
+            param.requires_grad = False   # 冻结
+            selector_params.append(param)
+        else:
+            other_params.append(param)
+
+    # 初始只训练非 selector 参数
+    optimizer = optim.SGD(
+        other_params,
+        lr=args.lr,
+        momentum=args.momentum,
+        weight_decay=5 * 10 ** args.wd
+    )
+    # StepLR + Warmup
+    exp_lr_scheduler = lr_scheduler.StepLR(
+        optimizer,
+        step_size=args.step_size,
+        gamma=args.gamma
+    )
+    scheduler_warmup = GradualWarmupScheduler(
+        optimizer,
+        multiplier=1.0,
+        total_epoch=args.warm_up_duration,
+        after_scheduler=exp_lr_scheduler
+    )
     
     exp_lr_scheduler = lr_scheduler.StepLR(optimizer, step_size=args.step_size, gamma=args.gamma)
     scheduler_warmup = GradualWarmupScheduler(optimizer, multiplier=1.0, total_epoch=args.warm_up_duration, after_scheduler=exp_lr_scheduler)
@@ -250,6 +279,16 @@ if __name__ == '__main__':
     feature_stats = {}
 
     for epoch in range(args.num_epochs):#200
+
+        # ====== 解冻 selector ======
+        if epoch == cfg['FEATURE_SELECT']['WARMUP_EPOCHS']:
+            print("Unfreezing selector...")
+            for p in selector_params:
+                p.requires_grad = True
+            optimizer.add_param_group({
+                "params": selector_params,
+                "lr": args.lr * cfg['FEATURE_SELECT']['LR_MULTIPLIER']
+            })
 
         count_iter += 1
         #每隔 display_iter（5）个 epoch 记录一次时间

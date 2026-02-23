@@ -1,4 +1,6 @@
 FEATURE_SELECT:
-  ENABLE: false
+  ENABLE: True
   TYPE: "task_dw"
   HYBRID_SCALES: []
+  LR_MULTIPLIER: 1.0
+  WARMUP_EPOCHS: 0
