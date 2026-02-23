@@ -126,6 +126,9 @@ if __name__ == '__main__':
         full_cfg = yaml.safe_load(f)
     feat_cfg = full_cfg['FEATURE_SELECT'] #获取特征选择相关配置字典
 
+    print("feat_cfg:", feat_cfg)
+    print("feat_cfg keys:", feat_cfg.keys())
+
     print_num = 77 + (cfg['NUM_CLASSES'] - 3) * 14
     print_num_minus = print_num - 2
     print_num_half = int(print_num / 2 - 1)
@@ -286,13 +289,13 @@ if __name__ == '__main__':
     for epoch in range(args.num_epochs):#200
 
         # ====== 解冻 selector ======
-        if epoch == feat_cfg['FEATURE_SELECT']['WARMUP_EPOCHS']:
+        if epoch == feat_cfg['WARMUP_EPOCHS']:
             print("Unfreezing selector...")
             for p in selector_params:
                 p.requires_grad = True
             optimizer.add_param_group({
                 "params": selector_params,
-                "lr": args.lr * feat_cfg['FEATURE_SELECT']['LR_MULTIPLIER']
+                "lr": args.lr * feat_cfg['LR_MULTIPLIER']
             })
 
         count_iter += 1
