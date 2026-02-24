@@ -32,6 +32,7 @@ class MultiScaleTaskSelector(nn.Module):
 
         self.selectors = nn.ModuleList()
         self.selector_map = []
+        self.scale_selectors = None
         for idx, in_ch in enumerate(in_channels_list):
             use_task_dw = self.mode == "task_dw" or idx not in self.hybrid_scales
             if use_task_dw:
@@ -47,6 +48,8 @@ class MultiScaleTaskSelector(nn.Module):
             else:
                 # Hybrid scale: placeholder for future expert selector.
                 self.selector_map.append(None)
+
+        self.scale_selectors = self.selector_map
 
     def forward(self, features):
         # features: list [f1, f2, f3, f4, f5]
@@ -65,3 +68,18 @@ class MultiScaleTaskSelector(nn.Module):
                     task_features[t].append(out)
 
         return task_features #长度为3，每个元素是一个list，包含5个scale的特征
+
+    def get_all_weight_stats(self):
+        stats = {}
+
+        for scale_idx, selector in enumerate(self.scale_selectors):
+            if selector is None:
+                continue
+            scale_stats = selector.get_weight_stats()
+            if not scale_stats:
+                continue
+            for task_name, task_stat in scale_stats.items():
+                key = f"scale{scale_idx}_{task_name}"
+                stats[key] = task_stat
+
+        return stats

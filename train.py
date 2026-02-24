@@ -11,6 +11,7 @@ import os
 import numpy as np
 import random
 import yaml
+import math
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel
 
@@ -23,6 +24,13 @@ from config.train_test_config.train_test_config import print_train_loss, print_v
 from warnings import simplefilter
 from aux_loss import imbalance_diceLoss, sdf_loss, MultiTaskLoss
 from csv_logger import CSVLogger
+
+def sigmoid_rampup(current, rampup_length):
+    if rampup_length == 0:
+        return 1.0
+    current = max(0.0, min(current, rampup_length))
+    phase = 1.0 - current / rampup_length
+    return math.exp(-5.0 * phase * phase)
 
 # 忽略 FutureWarning（减少训练输出警告噪声）
 simplefilter(action='ignore', category=FutureWarning)
@@ -218,47 +226,50 @@ if __name__ == '__main__':
     loss_fn = MultiTaskLoss().cuda()
 
     #为 model 创建一个 SGD 优化器
-    # 按参数分组：selector参数和其他参数（encoder+decoder）
-    selector_params = []
-    other_params = []
+    model_for_opt = model.module if hasattr(model, "module") else model #检查 model 是否使用了分布式数据
+    #获取 model 的编码器、解码器和选择模块的参数列表，准备传递给优化器
+    backbone_params = (
+        list(model_for_opt.encoder.parameters())
+        + list(model_for_opt.decoder_seg.parameters())
+        + list(model_for_opt.decoder_sdf.parameters())
+        + list(model_for_opt.decoder_bnd.parameters())
+    )
+    selector_params = list(model_for_opt.selector.parameters()) if model_for_opt.selector is not None else []
+    loss_params = list(loss_fn.parameters())
+    gate_params = list(gating_model.parameters())
 
-    for name, param in model.named_parameters():
-        if "selector" in name:
-            param.requires_grad = False   # 冻结
-            selector_params.append(param)
-        else:
-            other_params.append(param)
+    base_lr = args.lr
+    selector_lr = base_lr * feat_cfg['LR_MULTIPLIER']
 
-    # 初始只训练非 selector 参数
-    optimizer = optim.SGD(
-        other_params,
-        lr=args.lr,
+    optimizer_main = optim.SGD(
+        [
+            {"params": backbone_params, "lr": base_lr},
+            {"params": selector_params, "lr": selector_lr},
+        ],
         momentum=args.momentum,
         weight_decay=5 * 10 ** args.wd
     )
-    # StepLR + Warmup
-    exp_lr_scheduler = lr_scheduler.StepLR(
-        optimizer,
-        step_size=args.step_size,
-        gamma=args.gamma
-    )
-    scheduler_warmup = GradualWarmupScheduler(
-        optimizer,
-        multiplier=1.0,
-        total_epoch=args.warm_up_duration,
-        after_scheduler=exp_lr_scheduler
+    optimizer_gate = optim.SGD(
+        gate_params,
+        lr=base_lr,
+        momentum=args.momentum,
+        weight_decay=5 * 10 ** args.wd
+    ) 
+    optimizer_loss = optim.Adam(
+        loss_params,
+        lr=0.05,
+        weight_decay=5 * 10 ** args.wd
     )
     
-    exp_lr_scheduler = lr_scheduler.StepLR(optimizer, step_size=args.step_size, gamma=args.gamma)
-    scheduler_warmup = GradualWarmupScheduler(optimizer, multiplier=1.0, total_epoch=args.warm_up_duration, after_scheduler=exp_lr_scheduler)
-
-    #为 gating_model 创建一个 SGD 优化器
-    optimizer4 = optim.SGD(gating_model.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=5 * 10 ** args.wd)
-    exp_lr_scheduler4 = lr_scheduler.StepLR(optimizer4, step_size=args.step_size, gamma=args.gamma)
-    scheduler_warmup4 = GradualWarmupScheduler(optimizer4, multiplier=1.0, total_epoch=args.warm_up_duration, after_scheduler=exp_lr_scheduler4)
-
-    #为 loss_fn（MultiTaskLoss 的可学习参数）创建 Adam 优化器，学习率固定为 0.05
-    optimizer5 = optim.Adam(loss_fn.parameters(), 0.05, weight_decay=5 * 10 ** args.wd)
+    exp_lr_scheduler = lr_scheduler.StepLR(
+        optimizer_main, step_size=args.step_size, gamma=args.gamma)
+    scheduler_warmup = GradualWarmupScheduler(
+        optimizer_main, multiplier=1.0, total_epoch=args.warm_up_duration, after_scheduler=exp_lr_scheduler)
+    
+    exp_lr_scheduler4 = lr_scheduler.StepLR(
+        optimizer_gate, step_size=args.step_size, gamma=args.gamma)
+    scheduler_warmup4 = GradualWarmupScheduler(
+        optimizer_gate, multiplier=1.0, total_epoch=args.warm_up_duration, after_scheduler=exp_lr_scheduler4)
 
     if rank == args.rank_index:
         total_params = (
@@ -285,18 +296,19 @@ if __name__ == '__main__':
     seg_entropy_sum = 0.0
     seg_entropy_count = 0
     feature_stats = {}
+    selector_ramp_T = feat_cfg['ALPHA_RAMPUP_EPOCHS']
+    unsup_ramp_T = feat_cfg['UNSUP_RAMPUP_EPOCHS']
+    max_unsup_weight = args.unsup_weight
 
     for epoch in range(args.num_epochs):#200
 
-        # ====== 解冻 selector ======
-        if epoch == feat_cfg['WARMUP_EPOCHS']:
-            print("Unfreezing selector...")
-            for p in selector_params:
-                p.requires_grad = True
-            optimizer.add_param_group({
-                "params": selector_params,
-                "lr": args.lr * feat_cfg['LR_MULTIPLIER']
-            })
+        # ====== 逐步使用 selector ======
+        selector_alpha = sigmoid_rampup(epoch, selector_ramp_T)
+        unsup_weight = max_unsup_weight * sigmoid_rampup(epoch, unsup_ramp_T)
+        model_for_alpha = model.module if hasattr(model, "module") else model
+        model_for_alpha.set_selector_alpha(selector_alpha)
+        if epoch % 5 == 0 and rank == args.rank_index:
+            print(f"[Epoch {epoch}] selector_alpha={selector_alpha:.4f}, unsup_weight={unsup_weight:.4f}")
 
         count_iter += 1
         #每隔 display_iter（5）个 epoch 记录一次时间
@@ -328,7 +340,7 @@ if __name__ == '__main__':
         val_loss_sup_3 = 0.0 #验证集有监督边界分支
 
         #线性增加无监督 loss 的权重
-        unsup_weight = args.unsup_weight * (epoch + 1) / args.num_epochs
+        # unsup_weight set before batch loop (sigmoid ramp-up)
         dist.barrier() #同步所有进程
 
         #创建两个迭代器，分别用于无监督和有监督训练集，在 epoch 内通过 next() 按需取批
@@ -343,9 +355,8 @@ if __name__ == '__main__':
             #从无监督 DataLoader 的迭代器中取下一批无标签数据
             unsup_index = next(dataset_train_unsup)
             img_train_unsup1 = unsup_index['image'].float().cuda()#取出图像张量并转换为 float，移动到当前 GPU
-            optimizer.zero_grad()#清空 model 优化器的梯度，准备新的反向传播
-            optimizer4.zero_grad()
-            optimizer5.zero_grad()
+            optimizer_main.zero_grad()#清空 model 优化器的梯度，准备新的反向传播
+            optimizer_loss.zero_grad()
         
             #前向传播：通过三个模型分别计算特征feat和分割预测 logits的pred
             outputs = model(img_train_unsup1)
@@ -373,7 +384,9 @@ if __name__ == '__main__':
             loss_train_unsup = loss_fn(loss_unsup_seg, loss_unsup_sdf, loss_unsup_bnd)
 
             loss_train_unsup = loss_train_unsup * unsup_weight
-            loss_train_unsup.backward(retain_graph=True) #保留计算图以便后续反向传播，本循环在同一前向图上要进行两次 backward
+            loss_train_unsup.backward()
+            optimizer_main.step()
+            optimizer_loss.step()
             torch.cuda.empty_cache()
 
             if rank == args.rank_index and not printed_memory:
@@ -407,6 +420,10 @@ if __name__ == '__main__':
                 if i == 0:
                     score_list_train1 = sup_out1
                     mask_list_train = mask_train_sup
+                    model_ref = model.module if hasattr(model, "module") else model
+                    selector_stats = model_ref.get_selector_weight_stats()
+                    if not isinstance(selector_stats, dict):
+                        selector_stats = {}
                 elif 0 < i <= num_batches['train_sup'] / 64:
                     score_list_train1 = torch.cat((score_list_train1, sup_out1), dim=0)
                     mask_list_train = torch.cat((mask_list_train, mask_train_sup), dim=0)
@@ -425,7 +442,7 @@ if __name__ == '__main__':
                 enc_params = [p for p in encoder.parameters() if p.requires_grad] if encoder is not None else []
                 if len(enc_params) > 0:
                     def _grad_l2_norm(loss):
-                        grads = torch.autograd.grad(loss, enc_params, retain_graph=True, allow_unused=True)
+                        grads = torch.autograd.grad(loss, enc_params, allow_unused=True)
                         total = torch.zeros(1, device=loss.device)
                         for g in grads:
                             if g is not None:
@@ -442,12 +459,15 @@ if __name__ == '__main__':
                     grad_enc_bnd = _grad_l2_norm(weighted_bnd)
                     print(f"GradEnc seg: {grad_enc_seg:.6f}, sdf: {grad_enc_sdf:.6f}, bnd: {grad_enc_bnd:.6f}")
    
+            optimizer_main.zero_grad()
+            optimizer_loss.zero_grad()
+            optimizer_gate.zero_grad()
             loss_train_sup.backward()
 
             #更新所有模型和 loss_fn 的参数
-            optimizer.step()
-            optimizer4.step()
-            optimizer5.step()
+            optimizer_main.step()
+            optimizer_loss.step()
+            optimizer_gate.step()
             torch.cuda.empty_cache()
 
             loss_train = loss_train_unsup + loss_train_sup #总损失
@@ -485,6 +505,34 @@ if __name__ == '__main__':
                     printed_encoder_debug = True
                 feature_stats = encoder.get_feature_stats() if encoder is not None else {}
                 print(feature_stats)
+                model_ref = model.module if hasattr(model, "module") else model
+                selector_stats_local = selector_stats if "selector_stats" in locals() and isinstance(selector_stats, dict) else {}
+                print("[Selector Stats]")
+                print(f"alpha: {selector_alpha:.4f}")
+                print(f"unsup_weight: {unsup_weight:.4f}")
+                if selector_stats_local:
+                    for idx, (_, stats) in enumerate(sorted(selector_stats_local.items(), key=lambda x: x[0])):
+                        print(
+                            "Task {} -> mean={:.4f}, std={:.4f}, min={:.4f}, max={:.4f}".format(
+                                idx,
+                                stats.get("mean", float("nan")),
+                                stats.get("std", float("nan")),
+                                stats.get("min", float("nan")),
+                                stats.get("max", float("nan")),
+                            )
+                        )
+                else:
+                    task_count = getattr(model_ref, "num_tasks", 0)
+                    for idx in range(task_count):
+                        print(
+                            "Task {} -> mean={:.4f}, std={:.4f}, min={:.4f}, max={:.4f}".format(
+                                idx,
+                                float("nan"),
+                                float("nan"),
+                                float("nan"),
+                                float("nan"),
+                            )
+                        )
                 torch.cuda.empty_cache()
 
             with torch.no_grad():
@@ -498,9 +546,9 @@ if __name__ == '__main__':
                     boundary_val = data['boundary'].cuda()
                     name_val = data['ID']
 
-                    optimizer.zero_grad()
-                    optimizer4.zero_grad()
-                    optimizer5.zero_grad()
+                    optimizer_main.zero_grad()
+                    optimizer_loss.zero_grad()
+                    optimizer_gate.zero_grad()
                
                     outputs = model(inputs_val1)
                     feat1 = outputs["seg"][0]
@@ -571,6 +619,23 @@ if __name__ == '__main__':
                         row["grad_enc_seg"] = grad_enc_seg if grad_enc_seg is not None else float("nan")
                         row["grad_enc_sdf"] = grad_enc_sdf if grad_enc_sdf is not None else float("nan")
                         row["grad_enc_bnd"] = grad_enc_bnd if grad_enc_bnd is not None else float("nan")
+                        row["selector_alpha"] = selector_alpha
+                        row["unsup_weight"] = unsup_weight
+
+                        if isinstance(selector_stats, dict) and len(selector_stats) > 0:
+                            for idx, (_, stats) in enumerate(sorted(selector_stats.items(), key=lambda x: x[0])):
+                                row[f"selector_task{idx}_mean"] = stats.get("mean", float("nan"))
+                                row[f"selector_task{idx}_std"] = stats.get("std", float("nan"))
+                                row[f"selector_task{idx}_min"] = stats.get("min", float("nan"))
+                                row[f"selector_task{idx}_max"] = stats.get("max", float("nan"))
+                        else:
+                            model_ref = model.module if hasattr(model, "module") else model
+                            task_count = getattr(model_ref, "num_tasks", 0)
+                            for idx in range(task_count):
+                                row[f"selector_task{idx}_mean"] = float("nan")
+                                row[f"selector_task{idx}_std"] = float("nan")
+                                row[f"selector_task{idx}_min"] = float("nan")
+                                row[f"selector_task{idx}_max"] = float("nan")
                         logger.log(row)
 
                     print('-' * print_num)

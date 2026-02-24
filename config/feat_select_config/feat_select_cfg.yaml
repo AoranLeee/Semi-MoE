@@ -2,5 +2,6 @@ FEATURE_SELECT:
   ENABLE: True
   TYPE: "task_dw"
   HYBRID_SCALES: []
-  LR_MULTIPLIER: 0.1
-  WARMUP_EPOCHS: 30
+  LR_MULTIPLIER: 5 #selector学习率
+  ALPHA_RAMPUP_EPOCHS: 20 #selector权重增加的epoch数
+  UNSUP_RAMPUP_EPOCHS: 80

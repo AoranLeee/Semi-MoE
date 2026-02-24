@@ -168,3 +168,31 @@ __init__.py 移除 unet_shared 导入。
 5) 配置
 新增 default.yaml，加入 FEATURE_SELECT 配置段（默认关闭）。
 下一次加额外参数
+
+2026.2.23 2.3.2-2.3.7
+1.修改train流程，增加LR_MULTIPLIER和WARMUP_EPOCHS参数
+2.训练之后效果非常不好，发现问题：
+**遇到loss不降低，过早收敛的问题**
+1. sigmoid函数输出的权重在0-1之间，和原特征相乘，直接使原特征变小，训练力度不足-->改为残差训练，x+w*x
+2. selector初始随机，直接使用，提取的特征不正确，干扰训练-->要让selector缓慢参与到训练中，可以采用sigmoid ramp-up进行
+
+2026.2.24 2.3.8
+1.task_dw_selector.py
+	- selector使用Sigmoid Ramp-up逐步参与训练，T = 20
+	- 增加alpha
+	- 加入sigmoid ramp-up函数
+	- 增加get_weight_stats统计函数，返回当前 forward 中产生的 weight maps 统计信息
+  	
+2.train.py：
+	- 无监督权重曲线不用线性增长，使用Sigmoid Ramp-up，T=80
+	- 新增selector_lr_multiplier=5，selector学习率是backbone的5倍
+	- 优化器结构优化，使用3个optimizer，不保留retain_graph
+	- 有监督，无监督更新差异
+	- 每个epoch更新alpha和unsup_weight
+	- 每5个epoch打印调试信息，显示alpha，unsup_weight
+	- 打印selector 输出均值，并写入日志
+	- 修改参数统计部分，加入特征提取模块参数量显示
+	- warm_up_duration也就是LR Warmup为10epoch
+
+3.multi_scale_task_selector.py
+	 - 添加get_all_weight_stats函数统计信息，返回所有 scale、所有 task 的统计

@@ -260,6 +260,25 @@ class UNetMultiTask(nn.Module):
         else:
             self.use_feat_selector = False
 
+    def set_selector_alpha(self, alpha: float):
+        if not self.use_feat_selector or self.selector is None:
+            return
+        if hasattr(self.selector, "selectors"):
+            for selector in self.selector.selectors:
+                if hasattr(selector, "set_alpha"):
+                    selector.set_alpha(alpha)
+        elif hasattr(self.selector, "set_alpha"):
+            self.selector.set_alpha(alpha)
+
+    def get_selector_weight_stats(self):
+        if self.selector is None:
+            return {}
+        if hasattr(self.selector, "get_all_weight_stats"):
+            return self.selector.get_all_weight_stats()
+        if hasattr(self.selector, "get_weight_stats"):
+            return self.selector.get_weight_stats()
+        return {}
+
     def forward(self, x):
         features = list(self.encoder(x))
         assert isinstance(features, list), "features must be a list of feature maps"
@@ -271,7 +290,10 @@ class UNetMultiTask(nn.Module):
             task_features = self.selector(features)
         else:
             # replicate original features for each task
-            task_features = [features for _ in range(self.num_tasks)]
+            task_features = [
+                [f for f in features]
+                for _ in range(self.num_tasks)
+            ]
         assert isinstance(task_features, list), "task_features must be a list"
         assert len(task_features) == self.num_tasks, "task_features length must match num_tasks"
 
