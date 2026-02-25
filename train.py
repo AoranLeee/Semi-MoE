@@ -220,6 +220,13 @@ if __name__ == '__main__':
     #输入的是第一层特征图，通道数为64；一共三个任务，所以乘3，和IN_CHANNELS其实没关系
     gating_model = create_model(args.gating_network, cfg['IN_CHANNELS'] * 64, cfg['NUM_CLASSES'])
 
+    def _disable_inplace(m):
+        if hasattr(m, "inplace") and m.inplace:
+            m.inplace = False
+
+    model.apply(_disable_inplace)
+    gating_model.apply(_disable_inplace)
+
     dist.barrier()
 
     #构建分割损失实例（dice、ce、bce、bcebound）
