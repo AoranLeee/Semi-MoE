@@ -357,6 +357,7 @@ if __name__ == '__main__':
             img_train_unsup1 = unsup_index['image'].float().cuda()#取出图像张量并转换为 float，移动到当前 GPU
             optimizer_main.zero_grad()#清空 model 优化器的梯度，准备新的反向传播
             optimizer_loss.zero_grad()
+            optimizer_gate.zero_grad()
         
             #前向传播：通过三个模型分别计算特征feat和分割预测 logits的pred
             outputs = model(img_train_unsup1)
@@ -384,10 +385,6 @@ if __name__ == '__main__':
             loss_train_unsup = loss_fn(loss_unsup_seg, loss_unsup_sdf, loss_unsup_bnd)
 
             loss_train_unsup = loss_train_unsup * unsup_weight
-            loss_train_unsup.backward()
-            optimizer_main.step()
-            optimizer_loss.step()
-            torch.cuda.empty_cache()
 
             if rank == args.rank_index and not printed_memory:
                 torch.cuda.synchronize()
@@ -437,32 +434,8 @@ if __name__ == '__main__':
 
             #使用 MultiTaskLoss 将三个子损失组合成一个标量有监督损失
             loss_train_sup = loss_fn(loss_train_sup1, loss_train_sup2, loss_train_sup3)
-            if count_iter % args.display_iter == 0 and rank == args.rank_index and grad_enc_seg is None:
-                encoder = model.module.encoder if hasattr(model, 'module') else model.encoder
-                enc_params = [p for p in encoder.parameters() if p.requires_grad] if encoder is not None else []
-                if len(enc_params) > 0:
-                    def _grad_l2_norm(loss):
-                        grads = torch.autograd.grad(loss, enc_params, allow_unused=True)
-                        total = torch.zeros(1, device=loss.device)
-                        for g in grads:
-                            if g is not None:
-                                total += g.pow(2).sum()
-                        return total.sqrt().item()
-
-                    #task loss
-                    weighted_seg = torch.exp(-loss_fn.sigma1) * loss_train_sup1
-                    weighted_sdf = 0.5 * torch.exp(-loss_fn.sigma2) * loss_train_sup2
-                    weighted_bnd = torch.exp(-loss_fn.sigma3) * loss_train_sup3
-
-                    grad_enc_seg = _grad_l2_norm(weighted_seg)
-                    grad_enc_sdf = _grad_l2_norm(weighted_sdf)
-                    grad_enc_bnd = _grad_l2_norm(weighted_bnd)
-                    print(f"GradEnc seg: {grad_enc_seg:.6f}, sdf: {grad_enc_sdf:.6f}, bnd: {grad_enc_bnd:.6f}")
-   
-            optimizer_main.zero_grad()
-            optimizer_loss.zero_grad()
-            optimizer_gate.zero_grad()
-            loss_train_sup.backward()
+            total_loss = loss_train_unsup + loss_train_sup
+            total_loss.backward()
 
             #更新所有模型和 loss_fn 的参数
             optimizer_main.step()
