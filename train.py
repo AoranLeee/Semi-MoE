@@ -396,7 +396,11 @@ if __name__ == '__main__':
             loss_train_unsup = loss_fn(loss_unsup_seg, loss_unsup_sdf, loss_unsup_bnd)
 
             loss_train_unsup = loss_train_unsup * unsup_weight
-            loss_train_unsup.backward()
+            # DDP note: unsup forward detaches selector, so some params are unused here.
+            # Use no_sync() to avoid DDP reduction errors; sync happens on supervised backward.
+            with model.no_sync():
+                with gating_model.no_sync():
+                    loss_train_unsup.backward()
 
             if rank == args.rank_index and not printed_memory:
                 torch.cuda.synchronize()
