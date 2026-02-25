@@ -176,7 +176,7 @@ __init__.py 移除 unet_shared 导入。
 1. sigmoid函数输出的权重在0-1之间，和原特征相乘，直接使原特征变小，训练力度不足-->改为残差训练，x+w*x
 2. selector初始随机，直接使用，提取的特征不正确，干扰训练-->要让selector缓慢参与到训练中，可以采用sigmoid ramp-up进行
 
-2026.2.24 2.3.8
+2026.2.24 2.3.8 selector曲线预热和残差计算
 1.task_dw_selector.py
 	- selector使用Sigmoid Ramp-up逐步参与训练，T = 20
 	- 增加alpha

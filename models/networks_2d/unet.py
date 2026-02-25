@@ -244,19 +244,26 @@ class UNetMultiTask(nn.Module):
         self.decoder_bnd = UNetDecoder(num_classes=num_classes)
         self.num_tasks = 3
         self.selector = None
-        fs_cfg = getattr(cfg, "FEATURE_SELECT", None) if cfg is not None else None
+        fs_cfg = cfg if cfg is not None else None
         if fs_cfg is not None:
-            self.use_feat_selector = fs_cfg.ENABLE
-            assert fs_cfg.TYPE in ["task_dw", "hybrid", "expert"], "FEATURE_SELECT.TYPE must be one of [task_dw, hybrid, expert]"
-            if fs_cfg.TYPE == "hybrid" and len(fs_cfg.HYBRID_SCALES) == 0:
+            self.use_feat_selector = fs_cfg["ENABLE"]
+            assert fs_cfg["TYPE"] in ["task_dw", "hybrid", "expert"], "FEATURE_SELECT.TYPE must be one of [task_dw, hybrid, expert]"
+            if fs_cfg["TYPE"] == "hybrid" and len(fs_cfg["HYBRID_SCALES"]) == 0:
                 print("Warning: FEATURE_SELECT.TYPE is 'hybrid' but HYBRID_SCALES is empty.")
             if self.use_feat_selector:
                 self.selector = MultiScaleTaskSelector(
                     in_channels_list=[64, 128, 256, 512, 1024],
                     num_tasks=self.num_tasks,
-                    mode=fs_cfg.TYPE,
-                    hybrid_scales=fs_cfg.HYBRID_SCALES,
+                    mode=fs_cfg["TYPE"],
+                    hybrid_scales=fs_cfg["HYBRID_SCALES"],
                 )
+                print(
+                    "Selector params:",
+                    sum(p.numel() for p in self.selector.parameters()) / 1e6,
+                    "M",
+                )
+            if self.use_feat_selector and self.selector is None:
+                raise RuntimeError("FEATURE_SELECT.ENABLE is True but selector was not created.")
         else:
             self.use_feat_selector = False
 
