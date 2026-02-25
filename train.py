@@ -300,8 +300,6 @@ if __name__ == '__main__':
     unsup_ramp_T = feat_cfg['UNSUP_RAMPUP_EPOCHS']
     max_unsup_weight = args.unsup_weight
 
-    torch.autograd.set_detect_anomaly(True)
-
     for epoch in range(args.num_epochs):#200
 
         # ====== 逐步使用 selector ======
@@ -390,7 +388,6 @@ if __name__ == '__main__':
             loss_train_unsup.backward()
             optimizer_main.step()
             optimizer_loss.step()
-            torch.cuda.empty_cache()
 
             if rank == args.rank_index and not printed_memory:
                 torch.cuda.synchronize()
@@ -449,7 +446,6 @@ if __name__ == '__main__':
             optimizer_main.step()
             optimizer_loss.step()
             optimizer_gate.step()
-            torch.cuda.empty_cache()
 
             loss_train = loss_train_unsup + loss_train_sup #总损失
             train_loss_unsup += loss_train_unsup.item() #累加 epoch 累计值 ，用于统计打印
@@ -460,7 +456,6 @@ if __name__ == '__main__':
 
         scheduler_warmup.step() #推进 optimizer 的学习率调度
         scheduler_warmup4.step()
-        torch.cuda.empty_cache()
 
         #验证集---------------------------------------
         #每隔 display_iter（5）个 epoch 在验证集上评估一次
@@ -475,7 +470,6 @@ if __name__ == '__main__':
             mask_list_train = torch.cat(mask_gather_list_train, dim=0)
 
             if rank == args.rank_index:
-                torch.cuda.empty_cache()
                 print('=' * print_num)
                 print('| Epoch {}/{}'.format(epoch + 1, args.num_epochs).ljust(print_num_minus, ' '), '|')
                 train_epoch_loss_sup1, train_epoch_loss_sup2, train_epoch_loss_sup3, train_epoch_loss_unsup, train_epoch_loss = print_train_loss(train_loss_sup_1, train_loss_sup_2, train_loss_sup_3, train_loss_unsup, train_loss, num_batches, print_num, print_num_minus)
@@ -485,36 +479,30 @@ if __name__ == '__main__':
                     print(f"Encoder last_features updated: {encoder.last_features is not None}")
                     printed_encoder_debug = True
                 feature_stats = encoder.get_feature_stats() if encoder is not None else {}
-                print(feature_stats)
+                enc_last_mean = feature_stats.get("enc_l5_mean", float("nan"))
+                print(f"enc_l5_mean: {enc_last_mean:.6f}")
                 model_ref = model.module if hasattr(model, "module") else model
                 selector_stats_local = selector_stats if "selector_stats" in locals() and isinstance(selector_stats, dict) else {}
                 print("[Selector Stats]")
                 print(f"alpha: {selector_alpha:.4f}")
                 print(f"unsup_weight: {unsup_weight:.4f}")
                 if selector_stats_local:
-                    for idx, (_, stats) in enumerate(sorted(selector_stats_local.items(), key=lambda x: x[0])):
+                    for scale_key, stats in sorted(selector_stats_local.items(), key=lambda x: x[0]):
                         print(
-                            "Task {} -> mean={:.4f}, std={:.4f}, min={:.4f}, max={:.4f}".format(
-                                idx,
+                            "Scale {} -> mean={:.4f}".format(
+                                scale_key,
                                 stats.get("mean", float("nan")),
-                                stats.get("std", float("nan")),
-                                stats.get("min", float("nan")),
-                                stats.get("max", float("nan")),
                             )
                         )
                 else:
                     task_count = getattr(model_ref, "num_tasks", 0)
                     for idx in range(task_count):
                         print(
-                            "Task {} -> mean={:.4f}, std={:.4f}, min={:.4f}, max={:.4f}".format(
+                            "Scale {} -> mean={:.4f}".format(
                                 idx,
-                                float("nan"),
-                                float("nan"),
-                                float("nan"),
                                 float("nan"),
                             )
                         )
-                torch.cuda.empty_cache()
 
             with torch.no_grad():
                 model.eval()
@@ -545,7 +533,6 @@ if __name__ == '__main__':
                         seg_entropy_sum += seg_entropy.item()
                         seg_entropy_count += 1
 
-                    torch.cuda.empty_cache()
 
                     if i == 0:
                         score_list_val1 = val_out1
@@ -563,7 +550,6 @@ if __name__ == '__main__':
                     val_loss_sup_2 += loss_val_sup2.item()
                     val_loss_sup_3 += loss_val_sup3.item()
 
-                torch.cuda.empty_cache()
                 score_gather_list_val1 = [torch.zeros_like(score_list_val1) for _ in range(ngpus_per_node)]
                 torch.distributed.all_gather(score_gather_list_val1, score_list_val1)
                 score_list_val1 = torch.cat(score_gather_list_val1, dim=0)
@@ -589,41 +575,36 @@ if __name__ == '__main__':
                         'gating_model': gating_model
                     }
                     best_val_eval_list = save_val_best_sup_2d(cfg['NUM_CLASSES'], best_val_eval_list, save_models, score_list_val1, name_list_val, val_eval_list1, path_trained_models, path_seg_results, cfg['PALETTE'], 'MoE')
-                    torch.cuda.empty_cache()
 
                     if logger is not None:
                         row = {"epoch": epoch + 1}
-                        for idx in range(1, 6):
-                            row[f"enc_l{idx}_mean"] = feature_stats.get(f"enc_l{idx}_mean", float("nan"))
-                            row[f"enc_l{idx}_std"] = feature_stats.get(f"enc_l{idx}_std", float("nan"))
+                        row["loss_seg"] = train_epoch_loss_sup1
+                        row["loss_sdf"] = train_epoch_loss_sup2
+                        row["loss_bnd"] = train_epoch_loss_sup3
+                        row["loss_unsup"] = train_epoch_loss_unsup
                         row["seg_entropy"] = seg_entropy_avg
-                        row["grad_enc_seg"] = grad_enc_seg if grad_enc_seg is not None else float("nan")
-                        row["grad_enc_sdf"] = grad_enc_sdf if grad_enc_sdf is not None else float("nan")
-                        row["grad_enc_bnd"] = grad_enc_bnd if grad_enc_bnd is not None else float("nan")
                         row["selector_alpha"] = selector_alpha
                         row["unsup_weight"] = unsup_weight
 
-                        if isinstance(selector_stats, dict) and len(selector_stats) > 0:
-                            for idx, (_, stats) in enumerate(sorted(selector_stats.items(), key=lambda x: x[0])):
-                                row[f"selector_task{idx}_mean"] = stats.get("mean", float("nan"))
-                                row[f"selector_task{idx}_std"] = stats.get("std", float("nan"))
-                                row[f"selector_task{idx}_min"] = stats.get("min", float("nan"))
-                                row[f"selector_task{idx}_max"] = stats.get("max", float("nan"))
-                        else:
-                            model_ref = model.module if hasattr(model, "module") else model
-                            task_count = getattr(model_ref, "num_tasks", 0)
-                            for idx in range(task_count):
-                                row[f"selector_task{idx}_mean"] = float("nan")
-                                row[f"selector_task{idx}_std"] = float("nan")
-                                row[f"selector_task{idx}_min"] = float("nan")
-                                row[f"selector_task{idx}_max"] = float("nan")
+                        def _get_scale_task_means(scale_idx):
+                            means = []
+                            for task_idx in range(3):
+                                key = f"scale{scale_idx}_task{task_idx}"
+                                stats = selector_stats.get(key) if isinstance(selector_stats, dict) else None
+                                mean_val = stats.get("mean") if isinstance(stats, dict) else float("nan")
+                                row[f"scale{scale_idx}_task{task_idx}_mean"] = mean_val
+                                means.append(mean_val)
+                            if all(isinstance(m, (int, float)) and not math.isnan(m) for m in means):
+                                return max(means) - min(means)
+                            return float("nan")
+
+                        row["scale0_task_diff"] = _get_scale_task_means(0)
+                        row["scale4_task_diff"] = _get_scale_task_means(4)
                         logger.log(row)
 
                     print('-' * print_num)
                     print('| Epoch Time: {:.4f}s'.format((time.time() - begin_time) / args.display_iter).ljust(
                         print_num_minus, ' '), '|')
-            torch.cuda.empty_cache()
-        torch.cuda.empty_cache()
 
     #训练结束，打印总耗时和最佳验证集评估指标
     if rank == args.rank_index:
