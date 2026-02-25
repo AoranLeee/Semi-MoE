@@ -300,6 +300,8 @@ if __name__ == '__main__':
     unsup_ramp_T = feat_cfg['UNSUP_RAMPUP_EPOCHS']
     max_unsup_weight = args.unsup_weight
 
+    torch.autograd.set_detect_anomaly(True)
+
     for epoch in range(args.num_epochs):#200
 
         # ====== 逐步使用 selector ======
@@ -385,6 +387,10 @@ if __name__ == '__main__':
             loss_train_unsup = loss_fn(loss_unsup_seg, loss_unsup_sdf, loss_unsup_bnd)
 
             loss_train_unsup = loss_train_unsup * unsup_weight
+            loss_train_unsup.backward()
+            optimizer_main.step()
+            optimizer_loss.step()
+            torch.cuda.empty_cache()
 
             if rank == args.rank_index and not printed_memory:
                 torch.cuda.synchronize()
@@ -434,8 +440,10 @@ if __name__ == '__main__':
 
             #使用 MultiTaskLoss 将三个子损失组合成一个标量有监督损失
             loss_train_sup = loss_fn(loss_train_sup1, loss_train_sup2, loss_train_sup3)
-            total_loss = loss_train_unsup + loss_train_sup
-            total_loss.backward()
+            optimizer_main.zero_grad()
+            optimizer_loss.zero_grad()
+            optimizer_gate.zero_grad()
+            loss_train_sup.backward()
 
             #更新所有模型和 loss_fn 的参数
             optimizer_main.step()
