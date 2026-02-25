@@ -69,9 +69,6 @@ class TaskDWSelector(nn.Module):
         Returns:
             dict with keys:
                 mean
-                std
-                min
-                max
         """
         if not self.last_weight_maps:
             return None
@@ -80,9 +77,6 @@ class TaskDWSelector(nn.Module):
         for idx, weight in enumerate(self.last_weight_maps):
             stats[f"task{idx}"] = {
                 "mean": weight.mean().item(),
-                "std": weight.std().item(),
-                "min": weight.min().item(),
-                "max": weight.max().item(),
             }
         return stats
 
@@ -97,12 +91,25 @@ class TaskDWSelector(nn.Module):
 
         outputs = []
         self.last_weight_maps = []
-
+        gates = []
         for dw in self.task_dw:
-            weight = self.sigmoid(dw(x))
-            self.last_weight_maps.append(weight)
+            logits = dw(x)
+            gate = self.sigmoid(logits)
+            gates.append(gate)
+
+        if len(gates) == 0:
+            return outputs
+
+        g = torch.cat(gates, dim=1)
+        g_mean = g.mean(dim=1, keepdim=True)
+        g_rel = g - g_mean
+
+        self.last_weight_maps = list(gates)
+
+        for t in range(self.num_tasks):
+            g_rel_t = g_rel[:, t:t + 1, :, :]
             if self.return_weight:
-                outputs.append(weight)
+                outputs.append(g_rel_t)
             else:
-                outputs.append(x * (1 + self.alpha * weight))
+                outputs.append(x * (1 + self.alpha * g_rel_t))
         return outputs
