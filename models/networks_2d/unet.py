@@ -35,10 +35,10 @@ class conv_block(nn.Module):
         self.conv = nn.Sequential(
             nn.Conv2d(ch_in, ch_out, kernel_size=3, stride=1, padding=1, bias=True),
             nn.BatchNorm2d(ch_out),
-            nn.ReLU(inplace=True),
+            nn.ReLU(inplace=False),
             nn.Conv2d(ch_out, ch_out, kernel_size=3, stride=1, padding=1, bias=True),
             nn.BatchNorm2d(ch_out),
-            nn.ReLU(inplace=True)
+            nn.ReLU(inplace=False)
         )
 
     def forward(self, x):
@@ -53,7 +53,7 @@ class up_conv(nn.Module):
             nn.Upsample(scale_factor=2),
             nn.Conv2d(ch_in, ch_out, kernel_size=3, stride=1, padding=1, bias=True),
             nn.BatchNorm2d(ch_out),
-            nn.ReLU(inplace=True)
+            nn.ReLU(inplace=False)
         )
 
     def forward(self, x):
@@ -69,7 +69,7 @@ class Recurrent_block(nn.Module):
         self.conv = nn.Sequential(
             nn.Conv2d(ch_out, ch_out, kernel_size=3, stride=1, padding=1, bias=True),
             nn.BatchNorm2d(ch_out),
-            nn.ReLU(inplace=True)
+            nn.ReLU(inplace=False)
         )
 
     def forward(self, x):
@@ -103,7 +103,7 @@ class single_conv(nn.Module):
         self.conv = nn.Sequential(
             nn.Conv2d(ch_in, ch_out, kernel_size=3, stride=1, padding=1, bias=True),
             nn.BatchNorm2d(ch_out),
-            nn.ReLU(inplace=True)
+            nn.ReLU(inplace=False)
         )
 
     def forward(self, x):
@@ -130,7 +130,7 @@ class Attention_block(nn.Module):
             nn.Sigmoid()
         )
 
-        self.relu = nn.ReLU(inplace=True)
+        self.relu = nn.ReLU(inplace=False)
 
     def forward(self, g, x):
         g1 = self.W_g(g)
