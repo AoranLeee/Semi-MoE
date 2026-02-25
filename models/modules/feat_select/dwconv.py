@@ -34,7 +34,7 @@ class DWConv(nn.Module):
         self.bn = nn.BatchNorm2d(in_channels) if use_bn else nn.Identity()
 
         if activation == "relu":
-            self.act = nn.ReLU(inplace=True)
+            self.act = nn.ReLU(inplace=False)
         elif activation == "gelu":
             self.act = nn.GELU()
         else:
