@@ -56,6 +56,7 @@ class TaskDWSelector(nn.Module):
 
         self.sigmoid = nn.Sigmoid()
         self.last_weight_maps = []
+        self.last_var = None
 
     def clear_last_weight_maps(self):
         self.last_weight_maps = []
@@ -91,6 +92,7 @@ class TaskDWSelector(nn.Module):
 
         outputs = []
         self.last_weight_maps = []
+        self.last_var = None
         gates = []
         for dw in self.task_dw:
             logits = dw(x)
@@ -103,6 +105,9 @@ class TaskDWSelector(nn.Module):
         g = torch.cat(gates, dim=1)
         g_mean = g.mean(dim=1, keepdim=True)
         g_rel = g - g_mean
+        g_spatial = g.mean(dim=(2, 3))
+        g_spatial_mean = g_spatial.mean(dim=1, keepdim=True)
+        self.last_var = ((g_spatial - g_spatial_mean) ** 2).mean()
 
         self.last_weight_maps = list(gates)
 

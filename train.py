@@ -96,7 +96,7 @@ if __name__ == '__main__':
     parser.add_argument('-s', '--step_size', default=50, type=int)#学习率 StepLR 的步幅（每 step_size 个 epoch 乘以 gamma）
     parser.add_argument('-l', '--lr', default=0.5, type=float)#初始学习率。
     parser.add_argument('-g', '--gamma', default=0.5, type=float)#StepLR 的衰减因子：每过 step_size epoch，学习率乘以 gamma。
-    parser.add_argument('-u', '--unsup_weight', default=0.5, type=float)#无监督部分 loss 的权重
+    parser.add_argument('-u', '--unsup_weight', default=0.2, type=float)#无监督部分 loss 的权重
     parser.add_argument('--loss', default='dice')#分割损失类型字符串，会用于构造 criterion（segmentation_loss(args.loss, False)）
     parser.add_argument('-w', '--warm_up_duration', default=20)#学习率预热的 epoch 数
     parser.add_argument('--momentum', default=0.9, type=float)
@@ -355,10 +355,6 @@ if __name__ == '__main__':
             #从无监督 DataLoader 的迭代器中取下一批无标签数据
             unsup_index = next(dataset_train_unsup)
             img_train_unsup1 = unsup_index['image'].float().cuda()#取出图像张量并转换为 float，移动到当前 GPU
-            optimizer_main.zero_grad()#清空 model 优化器的梯度，准备新的反向传播
-            optimizer_loss.zero_grad()
-            optimizer_gate.zero_grad()
-        
             #前向传播：通过三个模型分别计算特征feat和分割预测 logits的pred
             outputs = model(img_train_unsup1)
             feat_unsup1 = outputs["seg"][0]
@@ -385,9 +381,6 @@ if __name__ == '__main__':
             loss_train_unsup = loss_fn(loss_unsup_seg, loss_unsup_sdf, loss_unsup_bnd)
 
             loss_train_unsup = loss_train_unsup * unsup_weight
-            loss_train_unsup.backward()
-            optimizer_main.step()
-            optimizer_loss.step()
 
             if rank == args.rank_index and not printed_memory:
                 torch.cuda.synchronize()
@@ -437,17 +430,24 @@ if __name__ == '__main__':
 
             #使用 MultiTaskLoss 将三个子损失组合成一个标量有监督损失
             loss_train_sup = loss_fn(loss_train_sup1, loss_train_sup2, loss_train_sup3)
+            model_ref = model.module if hasattr(model, "module") else model
+            loss_var = 0.0
+            if hasattr(model_ref, "selector") and model_ref.selector is not None:
+                loss_var = getattr(model_ref.selector, "last_loss_var", None)
+                if loss_var is None:
+                    loss_var = 0.0
+            loss_total = loss_train_sup + loss_train_unsup + loss_var
             optimizer_main.zero_grad()
             optimizer_loss.zero_grad()
             optimizer_gate.zero_grad()
-            loss_train_sup.backward()
+            loss_total.backward()
 
             #更新所有模型和 loss_fn 的参数
             optimizer_main.step()
             optimizer_loss.step()
             optimizer_gate.step()
 
-            loss_train = loss_train_unsup + loss_train_sup #总损失
+            loss_train = loss_total #总损失
             train_loss_unsup += loss_train_unsup.item() #累加 epoch 累计值 ，用于统计打印
             train_loss_sup_1 += loss_train_sup1.item()
             train_loss_sup_2 += loss_train_sup2.item()
@@ -504,6 +504,26 @@ if __name__ == '__main__':
                             )
                         )
 
+                selector_var = float("nan")
+                if hasattr(model_ref, "selector") and model_ref.selector is not None:
+                    var_mean = getattr(model_ref.selector, "last_var_mean", None)
+                    if var_mean is not None:
+                        selector_var = var_mean.item()
+                print(f"gate_variance: {selector_var:.6f}")
+                def _scale_task_diff(scale_idx):
+                    means = []
+                    for task_idx in range(3):
+                        key = f"scale{scale_idx}_task{task_idx}"
+                        stats = selector_stats_local.get(key) if selector_stats_local else None
+                        mean_val = stats.get("mean") if isinstance(stats, dict) else float("nan")
+                        means.append(mean_val)
+                    if all(isinstance(m, (int, float)) and not math.isnan(m) for m in means):
+                        return max(means) - min(means)
+                    return float("nan")
+                diff0 = _scale_task_diff(0)
+                diff4 = _scale_task_diff(4)
+                print(f"scale0_task_diff: {diff0:.6f}")
+                print(f"scale4_task_diff: {diff4:.6f}")
             with torch.no_grad():
                 model.eval()
                 gating_model.eval()
@@ -585,6 +605,7 @@ if __name__ == '__main__':
                         row["seg_entropy"] = seg_entropy_avg
                         row["selector_alpha"] = selector_alpha
                         row["unsup_weight"] = unsup_weight
+                        row["gate_variance"] = selector_var
 
                         def _get_scale_task_means(scale_idx):
                             means = []
