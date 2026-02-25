@@ -360,6 +360,10 @@ if __name__ == '__main__':
             if rank == args.rank_index and not printed_memory:
                 torch.cuda.reset_peak_memory_stats()
 
+            optimizer_main.zero_grad()
+            optimizer_loss.zero_grad()
+            optimizer_gate.zero_grad()
+
             #无监督---------------------------------------
             #从无监督 DataLoader 的迭代器中取下一批无标签数据
             unsup_index = next(dataset_train_unsup)
@@ -390,6 +394,7 @@ if __name__ == '__main__':
             loss_train_unsup = loss_fn(loss_unsup_seg, loss_unsup_sdf, loss_unsup_bnd)
 
             loss_train_unsup = loss_train_unsup * unsup_weight
+            loss_train_unsup.backward()
 
             if rank == args.rank_index and not printed_memory:
                 torch.cuda.synchronize()
@@ -445,11 +450,9 @@ if __name__ == '__main__':
                 loss_var = getattr(model_ref.selector, "last_loss_var", None)
                 if loss_var is None:
                     loss_var = 0.0
+            loss_sup_total = loss_train_sup + loss_var
+            loss_sup_total.backward()
             loss_total = loss_train_sup + loss_train_unsup + loss_var
-            optimizer_main.zero_grad()
-            optimizer_loss.zero_grad()
-            optimizer_gate.zero_grad()
-            loss_total.backward()
 
             #更新所有模型和 loss_fn 的参数
             optimizer_main.step()
