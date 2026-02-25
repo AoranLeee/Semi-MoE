@@ -286,7 +286,7 @@ class UNetMultiTask(nn.Module):
             return self.selector.get_weight_stats()
         return {}
 
-    def forward(self, x):
+    def forward(self, x, detach_selector=False):
         features = list(self.encoder(x))
         assert isinstance(features, list), "features must be a list of feature maps"
         assert len(features) == 5, "features must contain 5 scales (f1..f5)"
@@ -294,7 +294,7 @@ class UNetMultiTask(nn.Module):
         # ---- Task-aware feature selection (template integration) ----
         if self.use_feat_selector:
             assert self.selector is not None, "selector must be initialized when USE_FEAT_SELECTOR is True"
-            task_features = self.selector(features)
+            task_features = self.selector(features, detach_selector=detach_selector)
         else:
             # replicate original features for each task
             task_features = [

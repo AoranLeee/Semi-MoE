@@ -55,7 +55,7 @@ class MultiScaleTaskSelector(nn.Module):
 
         self.scale_selectors = self.selector_map
 
-    def forward(self, features):
+    def forward(self, features, detach_selector=False):
         # features: list [f1, f2, f3, f4, f5]
         if len(features) != len(self.selector_map):
             raise ValueError("features length must match in_channels_list length")
@@ -69,7 +69,7 @@ class MultiScaleTaskSelector(nn.Module):
                 for t in range(self.num_tasks):
                     task_features[t].append(feat)
             else:
-                outputs = selector(feat)
+                outputs = selector(feat, alpha=selector.alpha, detach_selector=detach_selector)
                 if selector.last_var is not None:
                     var_list.append(selector.last_var)
                     self.last_var_per_scale[scale_idx] = selector.last_var

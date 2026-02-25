@@ -371,7 +371,7 @@ if __name__ == '__main__':
             unsup_index = next(dataset_train_unsup)
             img_train_unsup1 = unsup_index['image'].float().cuda()#取出图像张量并转换为 float，移动到当前 GPU
             #前向传播：通过三个模型分别计算特征feat和分割预测 logits的pred
-            outputs = model(img_train_unsup1)
+            outputs = model(img_train_unsup1, detach_selector=True)
             feat_unsup1 = outputs["seg"][0]
             pred_train_unsup1 = outputs["seg"][1]
             feat_unsup2 = outputs["sdf"][0]
@@ -412,7 +412,7 @@ if __name__ == '__main__':
             boundary_train_sup = sup_index['boundary'].cuda()
  
             #前向传播
-            outputs = model(img_train_sup1)
+            outputs = model(img_train_sup1, detach_selector=False)
             feat_sup1 = outputs["seg"][0]
             pred_train_sup1 = outputs["seg"][1]
             feat_sup2 = outputs["sdf"][0]
@@ -538,6 +538,19 @@ if __name__ == '__main__':
                 diff4 = _scale_task_diff(4)
                 print(f"scale0_task_diff: {diff0:.6f}")
                 print(f"scale4_task_diff: {diff4:.6f}")
+                # Print adapter beta_t for scale4 alongside scale4_task_diff
+                beta_vals = []
+                if hasattr(model_ref, "selector") and model_ref.selector is not None:
+                    scale_selectors = getattr(model_ref.selector, "scale_selectors", None)
+                    if isinstance(scale_selectors, list) and len(scale_selectors) > 4:
+                        scale4_selector = scale_selectors[4]
+                        if scale4_selector is not None and hasattr(scale4_selector, "adapter_beta"):
+                            beta_vals = scale4_selector.adapter_beta.detach().cpu().tolist()
+                if beta_vals:
+                    beta_str = ", ".join(f"{b:.6f}" for b in beta_vals)
+                    print(f"scale4_beta: [{beta_str}]")
+                else:
+                    print("scale4_beta: []")
             with torch.no_grad():
                 model.eval()
                 gating_model.eval()

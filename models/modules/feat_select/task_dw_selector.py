@@ -65,6 +65,8 @@ class TaskDWSelector(nn.Module):
             BottleneckAdapter(in_channels, ratio=adapter_ratio)
             for _ in range(num_tasks)
         ])
+        # Per-task adapter scaling (beta_t), initialized to 0
+        self.adapter_beta = nn.Parameter(torch.zeros(num_tasks))
 
         self.sigmoid = nn.Sigmoid()
         self.last_weight_maps = []
@@ -93,7 +95,7 @@ class TaskDWSelector(nn.Module):
             }
         return stats
 
-    def forward(self, x):
+    def forward(self, x, alpha, detach_selector=False):
         """
         x: [B, C, H, W]
         returns:
@@ -125,12 +127,16 @@ class TaskDWSelector(nn.Module):
 
         for t in range(self.num_tasks):
             g_rel_t = g_rel[:, t:t + 1, :, :]
-            g_out = 1 + self.alpha * g_rel_t
+            g_out = 1 + alpha * g_rel_t
+            adapter_out = self.adapters[t](x)
+            beta_t = self.adapter_beta[t]
+            if detach_selector:
+                g_out = g_out.detach()
+                adapter_out = adapter_out.detach()
+
+            x_out = x * g_out + beta_t * adapter_out
             if self.return_weight:
                 outputs.append(g_out)
             else:
-                x_gate = x * g_out
-                x_adapter = self.adapters[t](x)
-                x_out = x_gate + x_adapter
                 outputs.append(x_out)
         return outputs
