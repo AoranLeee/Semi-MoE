@@ -29,7 +29,7 @@ class MultiScaleTaskSelector(nn.Module):
         self.num_tasks = num_tasks
         self.mode = mode
         self.hybrid_scales = set(hybrid_scales or [])
-        self.lambda_var = 1e-3
+        self.lambda_var = 5e-4
         self.last_var_mean = None
         self.last_loss_var = None
         self.last_var_per_scale = {}

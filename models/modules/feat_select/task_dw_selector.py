@@ -4,16 +4,22 @@ import numpy as np
 from .dwconv import DWConv
 
 
-# def sigmoid_rampup(current: int, rampup_length: int) -> float:
-#     """
-#     Sigmoid ramp-up function used for alpha scheduling.
-#     """
-#     if rampup_length == 0:
-#         return 1.0
-#     current = np.clip(current, 0.0, rampup_length)
-#     phase = 1.0 - current / rampup_length
-#     return float(np.exp(-5.0 * phase * phase))
+class BottleneckAdapter(nn.Module):
+    def __init__(self, in_channels, ratio=4):
+        super().__init__()
+        hidden = max(1, in_channels // ratio)
+        self.conv1 = nn.Conv2d(in_channels, hidden, kernel_size=1, bias=True)
+        self.act = nn.ReLU(inplace=False)
+        self.conv2 = nn.Conv2d(hidden, in_channels, kernel_size=1, bias=True)
+        nn.init.zeros_(self.conv2.weight)
+        if self.conv2.bias is not None:
+            nn.init.zeros_(self.conv2.bias)
 
+    def forward(self, x):
+        x = self.conv1(x)
+        x = self.act(x)
+        x = self.conv2(x)
+        return x
 
 class TaskDWSelector(nn.Module):
     """
@@ -37,6 +43,7 @@ class TaskDWSelector(nn.Module):
         kernel_size=3,
         use_bn=True,
         activation="relu",
+        adapter_ratio=4,
     ):
         super().__init__()
         self.num_tasks = num_tasks
@@ -51,6 +58,11 @@ class TaskDWSelector(nn.Module):
                 use_bn=use_bn,
                 activation=activation,
             )
+            for _ in range(num_tasks)
+        ])
+
+        self.adapters = nn.ModuleList([
+            BottleneckAdapter(in_channels, ratio=adapter_ratio)
             for _ in range(num_tasks)
         ])
 
@@ -113,8 +125,12 @@ class TaskDWSelector(nn.Module):
 
         for t in range(self.num_tasks):
             g_rel_t = g_rel[:, t:t + 1, :, :]
+            g_out = 1 + self.alpha * g_rel_t
             if self.return_weight:
-                outputs.append(g_rel_t)
+                outputs.append(g_out)
             else:
-                outputs.append(x * (1 + self.alpha * g_rel_t))
+                x_gate = x * g_out
+                x_adapter = self.adapters[t](x)
+                x_out = x_gate + x_adapter
+                outputs.append(x_out)
         return outputs

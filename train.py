@@ -248,6 +248,10 @@ if __name__ == '__main__':
     base_lr = args.lr
     selector_lr = base_lr * feat_cfg['LR_MULTIPLIER']
 
+    # IMPORTANT: keep routing-gate params (gate_params) separate from selector/adapter params.
+    # - selector_params (selector + adapters) are feature modulation layers and must follow optimizer_main
+    #   with their own LR (selector_lr).
+    # - gate_params are Semi-MoE routing gates and must be optimized only by optimizer_gate.
     optimizer_main = optim.SGD(
         [
             {"params": backbone_params, "lr": base_lr},
@@ -261,7 +265,7 @@ if __name__ == '__main__':
         lr=base_lr,
         momentum=args.momentum,
         weight_decay=5 * 10 ** args.wd
-    ) 
+    )
     optimizer_loss = optim.Adam(
         loss_params,
         lr=0.05,
