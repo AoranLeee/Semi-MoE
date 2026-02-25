@@ -141,6 +141,8 @@ if __name__ == '__main__':
     print_num_minus = print_num - 2
     print_num_half = int(print_num / 2 - 1)
 
+    torch.autograd.set_detect_anomaly(True)
+
     # trained model save
     #checkpoints/GlaS
     path_trained_models = cfg['PATH_TRAINED_MODEL'] + '/' + str(dataset_name)
