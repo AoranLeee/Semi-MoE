@@ -79,7 +79,7 @@ class MultiScaleTaskSelector(nn.Module):
                     task_features[t].append(feat)
             else:
                 if self.mode == "expert":
-                    outputs = selector(feat)
+                    outputs = selector(feat, detach_selector=detach_selector)
                     if hasattr(selector, "last_loss_ent") and selector.last_loss_ent is not None:
                         loss_ent_list.append(selector.last_loss_ent)
                 else:

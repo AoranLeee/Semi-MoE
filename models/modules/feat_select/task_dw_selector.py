@@ -202,7 +202,7 @@ class LowRankExpertSelector(nn.Module):
     def get_aux_loss(self):
         return self.last_loss_ent
 
-    def forward(self, x):
+    def forward(self, x, detach_selector=False):
         """
         x: [B, C, H, W]
         returns:
@@ -223,6 +223,8 @@ class LowRankExpertSelector(nn.Module):
         for t in range(self.num_tasks):
             gate_logits = self.task_gates[t](x)
             alpha = torch.softmax(gate_logits, dim=1)
+            if detach_selector:
+                alpha = alpha.detach()
             alpha = alpha.unsqueeze(2)
             f_t = (alpha * E).sum(dim=1)
 

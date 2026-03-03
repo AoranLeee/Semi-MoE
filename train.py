@@ -373,7 +373,7 @@ if __name__ == '__main__':
             unsup_index = next(dataset_train_unsup)
             img_train_unsup1 = unsup_index['image'].float().cuda()#取出图像张量并转换为 float，移动到当前 GPU
             #前向传播：通过三个模型分别计算特征feat和分割预测 logits的pred
-            outputs = model(img_train_unsup1)
+            outputs = model(img_train_unsup1, detach_selector=True)
             feat_unsup1 = outputs["seg"][0]
             pred_train_unsup1 = outputs["seg"][1]
             feat_unsup2 = outputs["sdf"][0]
