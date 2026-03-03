@@ -73,8 +73,6 @@ class MultiScaleTaskSelector(nn.Module):
         loss_ent_list = []
         self.last_var_per_scale = {}
         for scale_idx, (feat, selector) in enumerate(zip(features, self.selector_map)):
-            if selector is not None:
-                print("Forward selector id:", id(selector))
             if selector is None:
                 # Hybrid scale: pass-through for now
                 for t in range(self.num_tasks):
@@ -116,7 +114,6 @@ class MultiScaleTaskSelector(nn.Module):
         for scale_idx, selector in enumerate(self.selector_map):
             if selector is None:
                 continue
-            print("Stats selector id:", id(selector))
             scale_stats = selector.get_weight_stats()
             if scale_stats is None:
                 continue
