@@ -188,13 +188,16 @@ class LowRankExpertSelector(nn.Module):
         self.last_alpha = None
         self.last_entropy = None
         self.last_loss_ent = None
+        self.last_usage = None
 
     def get_weight_stats(self):
-        if self.last_entropy is None:
-            return None
-        return {
-            "entropy": self.last_entropy.item(),
-        }
+        stats = {}
+        if self.last_entropy is not None:
+            stats["entropy"] = self.last_entropy.item()
+        if self.last_usage is not None:
+            for i, val in enumerate(self.last_usage):
+                stats[f"usage_e{i}"] = val.item()
+        return stats if len(stats) > 0 else None
 
     def get_aux_loss(self):
         return self.last_loss_ent
@@ -233,10 +236,14 @@ class LowRankExpertSelector(nn.Module):
                 outputs.append(alpha)
             else:
                 outputs.append(f_t)
+        if self.last_alpha is not None:
+            alpha_mean = self.last_alpha.mean(dim=[0, 2, 3, 4])
+            self.last_usage = alpha_mean.detach()
         if len(entropy_list) > 0:
             self.last_entropy = torch.stack(entropy_list).mean()
             self.last_loss_ent = -self.lambda_ent * self.last_entropy
         else:
             self.last_entropy = None
             self.last_loss_ent = None
+            self.last_usage = None
         return outputs

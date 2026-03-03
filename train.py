@@ -511,68 +511,27 @@ if __name__ == '__main__':
                 print(f"enc_l5_mean: {enc_last_mean:.6f}")
                 model_ref = model.module if hasattr(model, "module") else model
                 selector_stats_local = selector_stats if "selector_stats" in locals() and isinstance(selector_stats, dict) else {}
-                selector_mode = getattr(getattr(model_ref, "selector", None), "mode", None)
                 print("[Selector Stats]")
                 #print(f"alpha: {selector_alpha:.4f}")
                 print(f"unsup_weight: {unsup_weight:.4f}")
+                entropy_vals = []
                 if selector_stats_local:
-                    for scale_key, stats in sorted(selector_stats_local.items(), key=lambda x: x[0]):
-                        mean_val = stats.get("mean") if isinstance(stats, dict) else None
-                        if mean_val is None and isinstance(stats, dict):
-                            mean_val = stats.get("value")
-                        print(
-                            "Scale {} -> mean={:.4f}".format(
-                                scale_key,
-                                mean_val if isinstance(mean_val, (int, float)) else float("nan"),
-                            )
-                        )
-                else:
-                    task_count = getattr(model_ref, "num_tasks", 0)
-                    for idx in range(task_count):
-                        print(
-                            "Scale {} -> mean={:.4f}".format(
-                                idx,
-                                float("nan"),
-                            )
-                        )
-                if "entropy" in selector_stats_local:
-                    print(f"expert_entropy: {selector_stats_local.get('entropy', float('nan')):.6f}")
+                    for key, val in sorted(selector_stats_local.items(), key=lambda x: x[0]):
+                        if "entropy" in key:
+                            value = val.get("value") if isinstance(val, dict) else None
+                            if isinstance(value, (int, float)):
+                                entropy_vals.append(value)
+                                print(f"{key}: {value:.6f}")
 
-                selector_var = None
-                if selector_mode != "expert":
-                    selector_var = float("nan")
-                    if hasattr(model_ref, "selector") and model_ref.selector is not None:
-                        var_mean = getattr(model_ref.selector, "last_var_mean", None)
-                        if var_mean is not None:
-                            selector_var = var_mean.item()
-                    print(f"gate_variance: {selector_var:.6f}")
-                def _scale_task_diff(scale_idx):
-                    means = []
-                    for task_idx in range(3):
-                        key = f"scale{scale_idx}_task{task_idx}"
-                        stats = selector_stats_local.get(key) if selector_stats_local else None
-                        mean_val = stats.get("mean") if isinstance(stats, dict) else float("nan")
-                        means.append(mean_val)
-                    if all(isinstance(m, (int, float)) and not math.isnan(m) for m in means):
-                        return max(means) - min(means)
-                    return float("nan")
-                diff0 = _scale_task_diff(0)
-                diff4 = _scale_task_diff(4)
-                print(f"scale0_task_diff: {diff0:.6f}")
-                print(f"scale4_task_diff: {diff4:.6f}")
-                # Print adapter beta_t for scale4 alongside scale4_task_diff
-                beta_vals = []
-                if hasattr(model_ref, "selector") and model_ref.selector is not None:
-                    scale_selectors = getattr(model_ref.selector, "scale_selectors", None)
-                    if isinstance(scale_selectors, list) and len(scale_selectors) > 4:
-                        scale4_selector = scale_selectors[4]
-                        if scale4_selector is not None and hasattr(scale4_selector, "adapter_beta"):
-                            beta_vals = scale4_selector.adapter_beta.detach().cpu().tolist()
-                if beta_vals:
-                    beta_str = ", ".join(f"{b:.6f}" for b in beta_vals)
-                    print(f"scale4_beta: [{beta_str}]")
-                else:
-                    print("scale4_beta: []")
+                    for key, val in sorted(selector_stats_local.items(), key=lambda x: x[0]):
+                        if key.startswith("scale0_usage_e"):
+                            value = val.get("value") if isinstance(val, dict) else None
+                            if isinstance(value, (int, float)):
+                                print(f"{key}: {value:.6f}")
+
+                if len(entropy_vals) > 0:
+                    expert_entropy = sum(entropy_vals) / len(entropy_vals)
+                    print(f"expert_entropy: {expert_entropy:.6f}")
             with torch.no_grad():
                 model.eval()
                 gating_model.eval()
@@ -646,35 +605,26 @@ if __name__ == '__main__':
                     best_val_eval_list = save_val_best_sup_2d(cfg['NUM_CLASSES'], best_val_eval_list, save_models, score_list_val1, name_list_val, val_eval_list1, path_trained_models, path_seg_results, cfg['PALETTE'], 'MoE')
 
                     if logger is not None:
-                        row = {"epoch": epoch + 1}
-                        row["loss_seg"] = train_epoch_loss_sup1
-                        row["loss_sdf"] = train_epoch_loss_sup2
-                        row["loss_bnd"] = train_epoch_loss_sup3
-                        row["loss_unsup"] = train_epoch_loss_unsup
-                        row["seg_entropy"] = seg_entropy_avg
-                        #row["selector_alpha"] = selector_alpha
-                        row["unsup_weight"] = unsup_weight
-                        row["gate_variance"] = selector_var
-                        row["expert_entropy"] = (
-                            selector_stats.get("entropy", float("nan"))
-                            if isinstance(selector_stats, dict)
-                            else float("nan")
-                        )
-
-                        def _get_scale_task_means(scale_idx):
-                            means = []
-                            for task_idx in range(3):
-                                key = f"scale{scale_idx}_task{task_idx}"
-                                stats = selector_stats.get(key) if isinstance(selector_stats, dict) else None
-                                mean_val = stats.get("mean") if isinstance(stats, dict) else float("nan")
-                                row[f"scale{scale_idx}_task{task_idx}_mean"] = mean_val
-                                means.append(mean_val)
-                            if all(isinstance(m, (int, float)) and not math.isnan(m) for m in means):
-                                return max(means) - min(means)
-                            return float("nan")
-
-                        row["scale0_task_diff"] = _get_scale_task_means(0)
-                        row["scale4_task_diff"] = _get_scale_task_means(4)
+                        row = {
+                            "epoch": epoch + 1,
+                            "loss_seg": train_epoch_loss_sup1,
+                            "loss_sdf": train_epoch_loss_sup2,
+                            "loss_bnd": train_epoch_loss_sup3,
+                            "loss_unsup": train_epoch_loss_unsup,
+                            "seg_entropy": seg_entropy_avg,
+                            "unsup_weight": unsup_weight,
+                        }
+                        selector_stats_safe = selector_stats if isinstance(selector_stats, dict) else {}
+                        for i in range(5):
+                            key = f"scale{i}_entropy"
+                            val = selector_stats_safe.get(key)
+                            value = val.get("value") if isinstance(val, dict) else None
+                            row[key] = value if isinstance(value, (int, float)) else ""
+                        for i in range(4):
+                            key = f"scale0_usage_e{i}"
+                            val = selector_stats_safe.get(key)
+                            value = val.get("value") if isinstance(val, dict) else None
+                            row[f"expert_usage_e{i}"] = value if isinstance(value, (int, float)) else ""
                         logger.log(row)
 
                     print('-' * print_num)
