@@ -511,15 +511,19 @@ if __name__ == '__main__':
                 print(f"enc_l5_mean: {enc_last_mean:.6f}")
                 model_ref = model.module if hasattr(model, "module") else model
                 selector_stats_local = selector_stats if "selector_stats" in locals() and isinstance(selector_stats, dict) else {}
+                selector_mode = getattr(getattr(model_ref, "selector", None), "mode", None)
                 print("[Selector Stats]")
                 #print(f"alpha: {selector_alpha:.4f}")
                 print(f"unsup_weight: {unsup_weight:.4f}")
                 if selector_stats_local:
                     for scale_key, stats in sorted(selector_stats_local.items(), key=lambda x: x[0]):
+                        mean_val = stats.get("mean") if isinstance(stats, dict) else None
+                        if mean_val is None and isinstance(stats, dict):
+                            mean_val = stats.get("value")
                         print(
                             "Scale {} -> mean={:.4f}".format(
                                 scale_key,
-                                stats.get("mean", float("nan")),
+                                mean_val if isinstance(mean_val, (int, float)) else float("nan"),
                             )
                         )
                 else:
@@ -534,12 +538,14 @@ if __name__ == '__main__':
                 if "entropy" in selector_stats_local:
                     print(f"expert_entropy: {selector_stats_local.get('entropy', float('nan')):.6f}")
 
-                selector_var = float("nan")
-                if hasattr(model_ref, "selector") and model_ref.selector is not None:
-                    var_mean = getattr(model_ref.selector, "last_var_mean", None)
-                    if var_mean is not None:
-                        selector_var = var_mean.item()
-                print(f"gate_variance: {selector_var:.6f}")
+                selector_var = None
+                if selector_mode != "expert":
+                    selector_var = float("nan")
+                    if hasattr(model_ref, "selector") and model_ref.selector is not None:
+                        var_mean = getattr(model_ref.selector, "last_var_mean", None)
+                        if var_mean is not None:
+                            selector_var = var_mean.item()
+                    print(f"gate_variance: {selector_var:.6f}")
                 def _scale_task_diff(scale_idx):
                     means = []
                     for task_idx in range(3):
