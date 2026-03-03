@@ -96,7 +96,7 @@ if __name__ == '__main__':
     parser.add_argument('-s', '--step_size', default=50, type=int)#学习率 StepLR 的步幅（每 step_size 个 epoch 乘以 gamma）
     parser.add_argument('-l', '--lr', default=0.5, type=float)#初始学习率。
     parser.add_argument('-g', '--gamma', default=0.5, type=float)#StepLR 的衰减因子：每过 step_size epoch，学习率乘以 gamma。
-    parser.add_argument('-u', '--unsup_weight', default=0.2, type=float)#无监督部分 loss 的权重
+    parser.add_argument('-u', '--unsup_weight', default=0.5, type=float)#无监督部分 loss 的权重
     parser.add_argument('--loss', default='dice')#分割损失类型字符串，会用于构造 criterion（segmentation_loss(args.loss, False)）
     parser.add_argument('-w', '--warm_up_duration', default=20)#学习率预热的 epoch 数
     parser.add_argument('--momentum', default=0.9, type=float)
@@ -307,19 +307,21 @@ if __name__ == '__main__':
     seg_entropy_sum = 0.0
     seg_entropy_count = 0
     feature_stats = {}
-    selector_ramp_T = feat_cfg['ALPHA_RAMPUP_EPOCHS']
+    #selector_ramp_T = feat_cfg['ALPHA_RAMPUP_EPOCHS']
     unsup_ramp_T = feat_cfg['UNSUP_RAMPUP_EPOCHS']
     max_unsup_weight = args.unsup_weight
 
     for epoch in range(args.num_epochs):#200
 
         # ====== 逐步使用 selector ======
-        selector_alpha = sigmoid_rampup(epoch, selector_ramp_T)
+        # selector_alpha = sigmoid_rampup(epoch, selector_ramp_T)
         unsup_weight = max_unsup_weight * sigmoid_rampup(epoch, unsup_ramp_T)
-        model_for_alpha = model.module if hasattr(model, "module") else model
-        model_for_alpha.set_selector_alpha(selector_alpha)
+        #model_for_alpha = model.module if hasattr(model, "module") else model
+        #model_for_alpha.set_selector_alpha(selector_alpha)
+        # if epoch % 5 == 0 and rank == args.rank_index:
+        #     print(f"[Epoch {epoch}] selector_alpha={selector_alpha:.4f}, unsup_weight={unsup_weight:.4f}")
         if epoch % 5 == 0 and rank == args.rank_index:
-            print(f"[Epoch {epoch}] selector_alpha={selector_alpha:.4f}, unsup_weight={unsup_weight:.4f}")
+            print(f"[Epoch {epoch}] unsup_weight={unsup_weight:.4f}")
 
         count_iter += 1
         #每隔 display_iter（5）个 epoch 记录一次时间
@@ -371,7 +373,7 @@ if __name__ == '__main__':
             unsup_index = next(dataset_train_unsup)
             img_train_unsup1 = unsup_index['image'].float().cuda()#取出图像张量并转换为 float，移动到当前 GPU
             #前向传播：通过三个模型分别计算特征feat和分割预测 logits的pred
-            outputs = model(img_train_unsup1, detach_selector=True)
+            outputs = model(img_train_unsup1)
             feat_unsup1 = outputs["seg"][0]
             pred_train_unsup1 = outputs["seg"][1]
             feat_unsup2 = outputs["sdf"][0]
@@ -380,7 +382,11 @@ if __name__ == '__main__':
             pred_train_unsup3 = outputs["bnd"][1]
 
             #在 channel 维度上拼接三路特征，作为 gating 网络的输入
-            gating_unsup_input = torch.cat([feat_unsup1, feat_unsup2, feat_unsup3], dim=1)
+            gating_unsup_input = torch.cat([
+                feat_unsup1.detach(),
+                feat_unsup2.detach(),
+                feat_unsup3.detach()
+            ], dim=1)
             #通过 gating 网络计算输出，融合后的分割 logits，SDF logits，边界 logits,用于生成伪标签
             unsup_out1, unsup_out2, unsup_out3 = gating_model(gating_unsup_input)
 
@@ -425,7 +431,11 @@ if __name__ == '__main__':
             pred_train_sup3 = outputs["bnd"][1]
 
             #拼接三路特征，作为 gating 网络的输入
-            gating_sup_input = torch.cat([feat_sup1, feat_sup2, feat_sup3], dim=1)
+            gating_sup_input = torch.cat([
+                feat_sup1.detach(),
+                feat_sup2.detach(),
+                feat_sup3.detach()
+            ], dim=1)
             sup_out1, sup_out2, sup_out3 = gating_model(gating_sup_input)
 
             #记录训练集的分割预测和标签，用于计算评估指标
@@ -502,7 +512,7 @@ if __name__ == '__main__':
                 model_ref = model.module if hasattr(model, "module") else model
                 selector_stats_local = selector_stats if "selector_stats" in locals() and isinstance(selector_stats, dict) else {}
                 print("[Selector Stats]")
-                print(f"alpha: {selector_alpha:.4f}")
+                #print(f"alpha: {selector_alpha:.4f}")
                 print(f"unsup_weight: {unsup_weight:.4f}")
                 if selector_stats_local:
                     for scale_key, stats in sorted(selector_stats_local.items(), key=lambda x: x[0]):
@@ -521,6 +531,8 @@ if __name__ == '__main__':
                                 float("nan"),
                             )
                         )
+                if "entropy" in selector_stats_local:
+                    print(f"expert_entropy: {selector_stats_local.get('entropy', float('nan')):.6f}")
 
                 selector_var = float("nan")
                 if hasattr(model_ref, "selector") and model_ref.selector is not None:
@@ -634,9 +646,14 @@ if __name__ == '__main__':
                         row["loss_bnd"] = train_epoch_loss_sup3
                         row["loss_unsup"] = train_epoch_loss_unsup
                         row["seg_entropy"] = seg_entropy_avg
-                        row["selector_alpha"] = selector_alpha
+                        #row["selector_alpha"] = selector_alpha
                         row["unsup_weight"] = unsup_weight
                         row["gate_variance"] = selector_var
+                        row["expert_entropy"] = (
+                            selector_stats.get("entropy", float("nan"))
+                            if isinstance(selector_stats, dict)
+                            else float("nan")
+                        )
 
                         def _get_scale_task_means(scale_idx):
                             means = []

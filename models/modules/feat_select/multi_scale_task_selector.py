@@ -1,4 +1,4 @@
-from .task_dw_selector import TaskDWSelector
+from .task_dw_selector import TaskDWSelector, LowRankExpertSelector
 import torch
 import torch.nn as nn
 
@@ -10,7 +10,7 @@ class MultiScaleTaskSelector(nn.Module):
     Args:
         in_channels_list (list[int]): channels for [f1,...,f5]
         num_tasks (int): default 3 (seg/sdf/bnd)
-        mode (str): 'task_dw' or 'hybrid'
+        mode (str): 'task_dw' | 'hybrid' | 'expert'
         hybrid_scales (iter[int] | None): scale indices to leave unselected in hybrid mode
         return_weight (bool): pass-through to TaskDWSelector
         detach_input (bool): pass-through to TaskDWSelector
@@ -40,13 +40,21 @@ class MultiScaleTaskSelector(nn.Module):
         for idx, in_ch in enumerate(in_channels_list):
             use_task_dw = self.mode == "task_dw" or idx not in self.hybrid_scales
             if use_task_dw:
-                # Plugin point: replace TaskDWSelector with expert-based selector.
-                selector = TaskDWSelector(
-                    in_channels=in_ch,
-                    num_tasks=num_tasks,
-                    return_weight=return_weight,
-                    detach_input=detach_input,
-                )
+                if mode == "expert":
+                    selector = LowRankExpertSelector(
+                        in_channels=in_ch,
+                        num_tasks=num_tasks,
+                        K=4,
+                        weak_prior=True,
+                        detach_input=detach_input
+                    )
+                else:
+                    selector = TaskDWSelector(
+                        in_channels=in_ch,
+                        num_tasks=num_tasks,
+                        return_weight=return_weight,
+                        detach_input=detach_input,
+                    )
                 self.selectors.append(selector)
                 self.selector_map.append(selector)
             else:
@@ -62,6 +70,7 @@ class MultiScaleTaskSelector(nn.Module):
 
         task_features = [[] for _ in range(self.num_tasks)]
         var_list = []
+        loss_ent_list = []
         self.last_var_per_scale = {}
         for scale_idx, (feat, selector) in enumerate(zip(features, self.selector_map)):
             if selector is None:
@@ -69,14 +78,28 @@ class MultiScaleTaskSelector(nn.Module):
                 for t in range(self.num_tasks):
                     task_features[t].append(feat)
             else:
-                outputs = selector(feat, alpha=selector.alpha, detach_selector=detach_selector)
-                if selector.last_var is not None:
-                    var_list.append(selector.last_var)
-                    self.last_var_per_scale[scale_idx] = selector.last_var
+                if self.mode == "expert":
+                    outputs = selector(feat)
+                    if hasattr(selector, "last_loss_ent") and selector.last_loss_ent is not None:
+                        loss_ent_list.append(selector.last_loss_ent)
+                else:
+                    outputs = selector(feat, alpha=selector.alpha, detach_selector=detach_selector)
+                    if self.mode == "task_dw" and selector.last_var is not None:
+                        var_list.append(selector.last_var)
+                        self.last_var_per_scale[scale_idx] = selector.last_var
                 for t, out in enumerate(outputs):
                     task_features[t].append(out)
 
-        if len(var_list) > 0:
+        if self.mode == "expert":
+            self.last_var_mean = None
+            if len(loss_ent_list) > 0:
+                self.last_loss_var = sum(loss_ent_list)
+            else:
+                self.last_loss_var = None
+        elif self.mode != "task_dw":
+            self.last_var_mean = None
+            self.last_loss_var = None
+        elif len(var_list) > 0:
             var_mean = torch.stack(var_list).mean()
             self.last_var_mean = var_mean
             self.last_loss_var = -self.lambda_var * var_mean
@@ -96,6 +119,9 @@ class MultiScaleTaskSelector(nn.Module):
                 continue
             for task_name, task_stat in scale_stats.items():
                 key = f"scale{scale_idx}_{task_name}"
-                stats[key] = task_stat
+                if isinstance(task_stat, dict):
+                    stats[key] = task_stat
+                else:
+                    stats[key] = {"value": task_stat}
 
         return stats

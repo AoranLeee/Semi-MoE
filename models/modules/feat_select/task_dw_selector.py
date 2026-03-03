@@ -140,3 +140,103 @@ class TaskDWSelector(nn.Module):
             else:
                 outputs.append(x_out)
         return outputs
+
+
+class LowRankExpertSelector(nn.Module):
+    """
+    Shared expert selector with task-conditioned softmax gating.
+    """
+
+    def __init__(
+        self,
+        in_channels,
+        num_tasks,
+        K=4,
+        weak_prior=True, #是否是先验专家
+        return_weight=False,
+        detach_input=False,
+    ):
+        super().__init__()
+        self.num_tasks = num_tasks
+        self.K = K
+        self.weak_prior = weak_prior
+        self.return_weight = return_weight
+        self.detach_input = detach_input
+
+        if weak_prior:
+            if K != 4:
+                raise ValueError("weak_prior=True requires K=4.")
+            self.experts = nn.ModuleList([
+                DWConv(in_channels, kernel_size=3),
+                DWConv(in_channels, kernel_size=3, dilation=2),
+                DWConv(in_channels, kernel_size=5),
+                nn.Identity(),
+            ])
+            self.K = len(self.experts)
+        else:
+            self.experts = nn.ModuleList([
+                DWConv(in_channels, kernel_size=3)
+                for _ in range(K)
+            ])
+
+        self.task_gates = nn.ModuleList([
+            nn.Conv2d(in_channels, self.K, kernel_size=1)
+            for _ in range(num_tasks)
+        ])
+
+        self.lambda_ent = 1e-3
+        self.last_alpha = None
+        self.last_entropy = None
+        self.last_loss_ent = None
+
+    def get_weight_stats(self):
+        if self.last_entropy is None:
+            return None
+        return {
+            "entropy": self.last_entropy.item(),
+        }
+
+    def get_aux_loss(self):
+        return self.last_loss_ent
+
+    def forward(self, x):
+        """
+        x: [B, C, H, W]
+        returns:
+            list length = num_tasks
+        """
+        if self.detach_input:
+            x = x.detach()
+
+        experts_out = [expert(x) for expert in self.experts]
+        if len(experts_out) == 0:
+            self.last_alpha = None
+            self.last_entropy = None
+            return []
+
+        E = torch.stack(experts_out, dim=1)
+        outputs = []
+        entropy_list = []
+        for t in range(self.num_tasks):
+            gate_logits = self.task_gates[t](x)
+            alpha = torch.softmax(gate_logits, dim=1)
+            alpha = alpha.unsqueeze(2)
+            f_t = (alpha * E).sum(dim=1)
+
+            self.last_alpha = alpha.detach()
+
+            entropy = -(alpha * torch.log(alpha + 1e-8)).sum(dim=1)
+            entropy = entropy.mean()
+            entropy_list.append(entropy)
+
+            if self.return_weight:
+                outputs.append(alpha)
+            else:
+                outputs.append(f_t)
+        if len(entropy_list) > 0:
+            self.last_entropy = torch.stack(entropy_list).mean()
+            self.last_loss_ent = -self.lambda_ent * self.last_entropy
+        else:
+            self.last_entropy = None
+            self.last_loss_ent = None
+        return outputs

@@ -9,6 +9,7 @@ class DWConv(nn.Module):
     Args:
         in_channels (int)
         kernel_size (int)
+        dilation (int)
         use_bn (bool)
         activation (str): 'relu' | 'gelu' | None
     """
@@ -17,17 +18,19 @@ class DWConv(nn.Module):
         self,
         in_channels,
         kernel_size=3,
+        dilation=1,
         use_bn=True,
         activation="relu",
     ):
         super().__init__()
-        padding = kernel_size // 2
+        padding = (kernel_size // 2) * dilation
 
         self.dwconv = nn.Conv2d(
             in_channels,
             in_channels,
             kernel_size=kernel_size,
             padding=padding,
+            dilation=dilation,
             groups=in_channels,
             bias=not use_bn,
         )

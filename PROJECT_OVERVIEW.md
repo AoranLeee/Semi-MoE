@@ -196,3 +196,32 @@ __init__.py 移除 unet_shared 导入。
 
 3.multi_scale_task_selector.py
 	 - 添加get_all_weight_stats函数统计信息，返回所有 scale、所有 task 的统计
+
+2026.2.26 2.3.9-2.4.11
+1. 解决挂载bug，之前都没挂载上selector
+2. 解决selector坍缩问题，几乎没分化：
+  - 引入RelativeGating，解决放大问题
+  - 引入正则项引导分化
+  - 引入Adapter强制分化
+  - 停用无监督指导，使用datch
+3. 方案一selector难以分化，采取以上措施改进效果不佳，故暂且放弃
+1.task_dw_selector.py
+	- selector使用Sigmoid Ramp-up逐步参与训练，T = 20
+	- 增加alpha
+	- 加入sigmoid ramp-up函数
+	- 增加get_weight_stats统计函数，返回当前 forward 中产生的 weight maps 统计信息
+  	
+2.train.py：
+	- 无监督权重曲线不用线性增长，使用Sigmoid Ramp-up，T=80
+	- 新增selector_lr_multiplier=5，selector学习率是backbone的5倍
+	- 优化器结构优化，使用3个optimizer，不保留retain_graph
+	- 有监督，无监督更新差异
+	- 每个epoch更新alpha和unsup_weight
+	- 每5个epoch打印调试信息，显示alpha，unsup_weight
+	- 打印selector 输出均值，并写入日志
+	- 修改参数统计部分，加入特征提取模块参数量显示
+	- warm_up_duration也就是LR Warmup为10epoch
+
+3.multi_scale_task_selector.py
+	 - 添加get_all_weight_stats函数统计信息，返回所有 scale、所有 task 的统计
+
