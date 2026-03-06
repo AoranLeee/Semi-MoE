@@ -225,3 +225,7 @@ __init__.py 移除 unet_shared 导入。
 3.multi_scale_task_selector.py
 	 - 添加get_all_weight_stats函数统计信息，返回所有 scale、所有 task 的统计
 
+2026.3.3 2.5.1-2.5.5
+1. 改为方案二，实现共享专家池和gating
+2. 出现专家均匀化获取的问题，另一种坍缩问题，效果不如仅使用共享编码器好
+3. 关闭无监督梯度更新，效果与共享编码器差不多了
