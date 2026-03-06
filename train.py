@@ -203,9 +203,9 @@ if __name__ == '__main__':
 
     #输入通道数为 cfg['IN_CHANNELS']，输出通道为 cfg['NUM_CLASSES']（分割类别数）
     shared_encoder = None
-    seg_decoder = None
-    sdf_decoder = None
-    bnd_decoder = None
+    seg_decoder_1 = None
+    seg_decoder_2 = None
+    seg_decoder_3 = None
     if args.network == 'unet':
         segment_model = create_model('unet', cfg['IN_CHANNELS'], cfg['NUM_CLASSES'])
         sdf_model = create_model('unet', cfg['IN_CHANNELS'], 1)
@@ -213,9 +213,9 @@ if __name__ == '__main__':
         shared_encoder = None
     elif args.network == 'unet_shared':
         shared_encoder = create_encoder(cfg['IN_CHANNELS'])
-        seg_decoder = create_decoder(cfg['NUM_CLASSES'])
-        sdf_decoder = create_decoder(1)
-        bnd_decoder = create_decoder(cfg['NUM_CLASSES'])
+        seg_decoder_1 = create_decoder(cfg['NUM_CLASSES'])
+        seg_decoder_2 = create_decoder(cfg['NUM_CLASSES'])
+        seg_decoder_3 = create_decoder(cfg['NUM_CLASSES'])
         segment_model = None
         sdf_model = None
         boundary_model = None
@@ -223,7 +223,7 @@ if __name__ == '__main__':
             enc_ids = [id(p) for p in shared_encoder.module.parameters()]
             print(f"Shared encoder param count: {len(enc_ids)}")
             enc_id_set = set(enc_ids)
-            decoders = [seg_decoder.module, sdf_decoder.module, bnd_decoder.module]
+            decoders = [seg_decoder_1.module, seg_decoder_2.module, seg_decoder_3.module]
             for dec in decoders:
                 assert not any(id(p) in enc_id_set for p in dec.parameters()), "Decoder contains encoder parameters"
     #输入的是第一层特征图，通道数为64；一共三个任务，所以乘3，和IN_CHANNELS其实没关系
@@ -242,9 +242,9 @@ if __name__ == '__main__':
         optimizer2 = optim.SGD(sdf_model.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=5 * 10 ** args.wd)
         optimizer3 = optim.SGD(boundary_model.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=5 * 10 ** args.wd)
     elif args.network == 'unet_shared':
-        optimizer1 = optim.SGD(list(shared_encoder.parameters()) + list(seg_decoder.parameters()), lr=args.lr, momentum=args.momentum, weight_decay=5 * 10 ** args.wd)
-        optimizer2 = optim.SGD(sdf_decoder.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=5 * 10 ** args.wd)
-        optimizer3 = optim.SGD(bnd_decoder.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=5 * 10 ** args.wd)
+        optimizer1 = optim.SGD(list(shared_encoder.parameters()) + list(seg_decoder_1.parameters()), lr=args.lr, momentum=args.momentum, weight_decay=5 * 10 ** args.wd)
+        optimizer2 = optim.SGD(seg_decoder_2.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=5 * 10 ** args.wd)
+        optimizer3 = optim.SGD(seg_decoder_3.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=5 * 10 ** args.wd)
 
     exp_lr_scheduler1 = lr_scheduler.StepLR(optimizer1, step_size=args.step_size, gamma=args.gamma)
     scheduler_warmup1 = GradualWarmupScheduler(optimizer1, multiplier=1.0, total_epoch=args.warm_up_duration, after_scheduler=exp_lr_scheduler1)
@@ -275,9 +275,9 @@ if __name__ == '__main__':
         elif args.network == 'unet_shared':
             total_params = (
                 count_params(shared_encoder)
-                + count_params(seg_decoder)
-                + count_params(sdf_decoder)
-                + count_params(bnd_decoder)
+                + count_params(seg_decoder_1)
+                + count_params(seg_decoder_2)
+                + count_params(seg_decoder_3)
                 + count_params(gating_model)
                 + count_params(loss_fn)
             )
@@ -324,9 +324,9 @@ if __name__ == '__main__':
             boundary_model.train()
         elif args.network == 'unet_shared':
             shared_encoder.train()
-            seg_decoder.train()
-            sdf_decoder.train()
-            bnd_decoder.train()
+            seg_decoder_1.train()
+            seg_decoder_2.train()
+            seg_decoder_3.train()
         gating_model.train()
 
         #初始化累加的 epoch 损失值
@@ -369,9 +369,9 @@ if __name__ == '__main__':
                 feat_unsup3, pred_train_unsup3 = boundary_model(img_train_unsup1)
             elif args.network == 'unet_shared':
                 features = shared_encoder(img_train_unsup1)
-                feat_unsup1, pred_train_unsup1 = seg_decoder(*features)
-                feat_unsup2, pred_train_unsup2 = sdf_decoder(*features)
-                feat_unsup3, pred_train_unsup3 = bnd_decoder(*features)
+                feat_unsup1, pred_train_unsup1 = seg_decoder_1(*features)
+                feat_unsup2, pred_train_unsup2 = seg_decoder_2(*features)
+                feat_unsup3, pred_train_unsup3 = seg_decoder_3(*features)
 
             #在 channel 维度上拼接三路特征，作为 gating 网络的输入
             gating_unsup_input = torch.cat([feat_unsup1, feat_unsup2, feat_unsup3], dim=1)
@@ -379,15 +379,22 @@ if __name__ == '__main__':
             unsup_out1, unsup_out2, unsup_out3 = gating_model(gating_unsup_input)
 
             #生成伪标签
-            fake_bnd = torch.max(unsup_out3, dim=1)[1].detach()
-            fake_sdf = (torch.tanh(unsup_out2)).detach() #tanh（将 SDF 值压缩到 [-1,1]）
             fake_mask = torch.max(unsup_out1, dim=1)[1].long().detach()
-            
-            #计算无监督损失
-            loss_unsup_seg = criterion(pred_train_unsup1, fake_mask)
-            loss_unsup_sdf = sdf_loss(torch.tanh(pred_train_unsup2), fake_sdf)
-            loss_unsup_bnd = imbalance_diceLoss(pred_train_unsup3, fake_bnd)
-            loss_train_unsup = loss_fn(loss_unsup_seg, loss_unsup_sdf, loss_unsup_bnd)
+            if args.network == 'unet':
+                fake_bnd = torch.max(unsup_out3, dim=1)[1].detach()
+                fake_sdf = (torch.tanh(unsup_out2)).detach()
+
+            # unsupervised loss
+            if args.network == 'unet':
+                loss_unsup_seg = criterion(pred_train_unsup1, fake_mask)
+                loss_unsup_sdf = sdf_loss(torch.tanh(pred_train_unsup2), fake_sdf)
+                loss_unsup_bnd = imbalance_diceLoss(pred_train_unsup3, fake_bnd)
+                loss_train_unsup = loss_fn(loss_unsup_seg, loss_unsup_sdf, loss_unsup_bnd)
+            elif args.network == 'unet_shared':
+                loss_unsup_seg1 = criterion(pred_train_unsup1, fake_mask)
+                loss_unsup_seg2 = criterion(pred_train_unsup2, fake_mask)
+                loss_unsup_seg3 = criterion(pred_train_unsup3, fake_mask)
+                loss_train_unsup = loss_fn(loss_unsup_seg1, loss_unsup_seg2, loss_unsup_seg3)
 
             loss_train_unsup = loss_train_unsup * unsup_weight
             loss_train_unsup.backward(retain_graph=True) #保留计算图以便后续反向传播，本循环在同一前向图上要进行两次 backward
@@ -413,9 +420,9 @@ if __name__ == '__main__':
                 feat_sup3, pred_train_sup3 = boundary_model(img_train_sup1)
             elif args.network == 'unet_shared':
                 features = shared_encoder(img_train_sup1)
-                feat_sup1, pred_train_sup1 = seg_decoder(*features)
-                feat_sup2, pred_train_sup2 = sdf_decoder(*features)
-                feat_sup3, pred_train_sup3 = bnd_decoder(*features)
+                feat_sup1, pred_train_sup1 = seg_decoder_1(*features)
+                feat_sup2, pred_train_sup2 = seg_decoder_2(*features)
+                feat_sup3, pred_train_sup3 = seg_decoder_3(*features)
 
             #拼接三路特征，作为 gating 网络的输入
             gating_sup_input = torch.cat([feat_sup1, feat_sup2, feat_sup3], dim=1)
@@ -433,9 +440,14 @@ if __name__ == '__main__':
             #计算有监督损失
             #把主分割模型的预测 pred_train_sup1 与 gating 的分割输出 sup_out1 都与真实 mask 比较，二者损失求和
             #损失函数不同
-            loss_train_sup1 = (criterion(pred_train_sup1, mask_train_sup) + criterion(sup_out1, mask_train_sup))
-            loss_train_sup2 = sdf_loss(torch.tanh(pred_train_sup2), sdf_train_sup) + sdf_loss(torch.tanh(sup_out2), sdf_train_sup) 
-            loss_train_sup3 = imbalance_diceLoss(pred_train_sup3, boundary_train_sup) + imbalance_diceLoss(sup_out3, boundary_train_sup)
+            if args.network == 'unet':
+                loss_train_sup1 = (criterion(pred_train_sup1, mask_train_sup) + criterion(sup_out1, mask_train_sup))
+                loss_train_sup2 = sdf_loss(torch.tanh(pred_train_sup2), sdf_train_sup) + sdf_loss(torch.tanh(sup_out2), sdf_train_sup)
+                loss_train_sup3 = imbalance_diceLoss(pred_train_sup3, boundary_train_sup) + imbalance_diceLoss(sup_out3, boundary_train_sup)
+            elif args.network == 'unet_shared':
+                loss_train_sup1 = criterion(pred_train_sup1, mask_train_sup) + criterion(sup_out1, mask_train_sup)
+                loss_train_sup2 = criterion(pred_train_sup2, mask_train_sup)
+                loss_train_sup3 = criterion(pred_train_sup3, mask_train_sup)
 
             #使用 MultiTaskLoss 将三个子损失组合成一个标量有监督损失
             loss_train_sup = loss_fn(loss_train_sup1, loss_train_sup2, loss_train_sup3)
@@ -523,9 +535,9 @@ if __name__ == '__main__':
                     boundary_model.eval()
                 elif args.network == 'unet_shared':
                     shared_encoder.eval()
-                    seg_decoder.eval()
-                    sdf_decoder.eval()
-                    bnd_decoder.eval()
+                    seg_decoder_1.eval()
+                    seg_decoder_2.eval()
+                    seg_decoder_3.eval()
                 gating_model.eval()
                 for i, data in enumerate(dataloaders['val']):
 
@@ -547,9 +559,9 @@ if __name__ == '__main__':
                         feat3, outputs_val3 = boundary_model(inputs_val1)
                     elif args.network == 'unet_shared':
                         features = shared_encoder(inputs_val1)
-                        feat1, outputs_val1 = seg_decoder(*features)
-                        feat2, outputs_val2 = sdf_decoder(*features)
-                        feat3, outputs_val3 = bnd_decoder(*features)
+                        feat1, outputs_val1 = seg_decoder_1(*features)
+                        feat2, outputs_val2 = seg_decoder_2(*features)
+                        feat3, outputs_val3 = seg_decoder_3(*features)
                     gating_input = torch.cat([feat1, feat2, feat3], dim=1)
                     val_out1, val_out2, val_out3 = gating_model(gating_input)
                     if rank == args.rank_index:
@@ -569,8 +581,12 @@ if __name__ == '__main__':
                         name_list_val = np.append(name_list_val, name_val, axis=0)
 
                     loss_val_sup1 = criterion(outputs_val1, mask_val)
-                    loss_val_sup2 = sdf_loss(torch.tanh(outputs_val2), sdf_val)
-                    loss_val_sup3 = imbalance_diceLoss(outputs_val3, boundary_val)
+                    if args.network == 'unet':
+                        loss_val_sup2 = sdf_loss(torch.tanh(outputs_val2), sdf_val)
+                        loss_val_sup3 = imbalance_diceLoss(outputs_val3, boundary_val)
+                    elif args.network == 'unet_shared':
+                        loss_val_sup2 = criterion(outputs_val2, mask_val)
+                        loss_val_sup3 = criterion(outputs_val3, mask_val)
                     val_loss_sup_1 += loss_val_sup1.item()
                     val_loss_sup_2 += loss_val_sup2.item()
                     val_loss_sup_3 += loss_val_sup3.item()
@@ -606,9 +622,9 @@ if __name__ == '__main__':
                     elif args.network == 'unet_shared':
                         save_models = {
                             'shared_encoder': shared_encoder,
-                            'seg_decoder': seg_decoder,
-                            'sdf_decoder': sdf_decoder,
-                            'bnd_decoder': bnd_decoder,
+                            'seg_decoder_1': seg_decoder_1,
+                            'seg_decoder_2': seg_decoder_2,
+                            'seg_decoder_3': seg_decoder_3,
                             'gating_model': gating_model
                         }
                     best_val_eval_list = save_val_best_sup_2d(cfg['NUM_CLASSES'], best_val_eval_list, save_models, score_list_val1, name_list_val, val_eval_list1, path_trained_models, path_seg_results, cfg['PALETTE'], 'MoE')
@@ -616,13 +632,12 @@ if __name__ == '__main__':
 
                     if logger is not None:
                         row = {"epoch": epoch + 1}
-                        for idx in range(1, 6):
-                            row[f"enc_l{idx}_mean"] = feature_stats.get(f"enc_l{idx}_mean", float("nan"))
-                            row[f"enc_l{idx}_std"] = feature_stats.get(f"enc_l{idx}_std", float("nan"))
+                        row["loss_seg_1"] = train_epoch_loss_sup1
+                        row["loss_seg_2"] = train_epoch_loss_sup2
+                        row["loss_seg_3"] = train_epoch_loss_sup3
+                        row["loss_unsup"] = train_epoch_loss_unsup
                         row["seg_entropy"] = seg_entropy_avg
-                        row["grad_enc_seg"] = grad_enc_seg if grad_enc_seg is not None else float("nan")
-                        row["grad_enc_sdf"] = grad_enc_sdf if grad_enc_sdf is not None else float("nan")
-                        row["grad_enc_bnd"] = grad_enc_bnd if grad_enc_bnd is not None else float("nan")
+                        row["Train Total Loss"] = train_epoch_loss
                         logger.log(row)
 
                     print('-' * print_num)
