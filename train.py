@@ -408,15 +408,15 @@ if __name__ == '__main__':
             #从有监督 DataLoader 的迭代器中取下一批有标签数据
             sup_index = next(dataset_train_sup)
             img_train_sup1 = sup_index['image'].float().cuda()
-            mask_train_sup = sup_index['mask'].float().cuda()
-            sdf_train_sup = sup_index['SDF'].float().cuda()
-            boundary_train_sup = sup_index['boundary'].float().cuda()
+            mask_train_sup = sup_index['mask'].cuda()
+            sdf_train_sup = sup_index['SDF'].cuda()
+            boundary_train_sup = sup_index['boundary'].cuda()
 
             #前向传播
             if args.network == 'unet':
                 feat_sup1, pred_train_sup1 = segment_model(img_train_sup1)
-                feat_sup2, pred_train_sup2 = sdf_model(sdf_train_sup)
-                feat_sup3, pred_train_sup3 = boundary_model(boundary_train_sup)
+                feat_sup2, pred_train_sup2 = sdf_model(img_train_sup1)
+                feat_sup3, pred_train_sup3 = boundary_model(img_train_sup1)
             elif args.network == 'unet_shared':
                 features = shared_encoder(img_train_sup1)
                 feat_sup1, pred_train_sup1 = seg_decoder_1(*features)
