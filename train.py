@@ -514,23 +514,25 @@ if __name__ == '__main__':
                 print("[Selector Stats]")
                 #print(f"alpha: {selector_alpha:.4f}")
                 print(f"unsup_weight: {unsup_weight:.4f}")
-                entropy_vals = []
+                scale2_entropy = None
                 if selector_stats_local:
-                    for key, val in sorted(selector_stats_local.items(), key=lambda x: x[0]):
-                        if "entropy" in key:
-                            value = val.get("value") if isinstance(val, dict) else None
-                            if isinstance(value, (int, float)):
-                                entropy_vals.append(value)
-                                print(f"{key}: {value:.6f}")
+                    entropy_key = "scale2_entropy"
+                    if entropy_key in selector_stats_local:
+                        val = selector_stats_local[entropy_key]
+                        value = val.get("value") if isinstance(val, dict) else None
+                        if isinstance(value, (int, float)):
+                            scale2_entropy = value
+                            print(f"scale2_entropy: {value:.6f}")
 
-                    for key, val in sorted(selector_stats_local.items(), key=lambda x: x[0]):
-                        if key.startswith("scale0_usage_e"):
-                            value = val.get("value") if isinstance(val, dict) else None
-                            if isinstance(value, (int, float)):
-                                print(f"{key}: {value:.6f}")
+                    for i in range(4):
+                        key = f"scale2_usage_e{i}"
+                        val = selector_stats_local.get(key)
+                        value = val.get("value") if isinstance(val, dict) else None
+                        if isinstance(value, (int, float)):
+                            print(f"{key}: {value:.6f}")
 
-                if len(entropy_vals) > 0:
-                    expert_entropy = sum(entropy_vals) / len(entropy_vals)
+                if isinstance(scale2_entropy, (int, float)):
+                    expert_entropy = scale2_entropy
                     print(f"expert_entropy: {expert_entropy:.6f}")
             with torch.no_grad():
                 model.eval()
@@ -615,16 +617,15 @@ if __name__ == '__main__':
                             "unsup_weight": unsup_weight,
                         }
                         selector_stats_safe = selector_stats if isinstance(selector_stats, dict) else {}
-                        for i in range(5):
-                            key = f"scale{i}_entropy"
+                        key = "scale2_entropy"
+                        val = selector_stats_safe.get(key)
+                        value = val.get("value") if isinstance(val, dict) else None
+                        row[key] = value if isinstance(value, (int, float)) else ""
+                        for i in range(4):
+                            key = f"scale2_usage_e{i}"
                             val = selector_stats_safe.get(key)
                             value = val.get("value") if isinstance(val, dict) else None
                             row[key] = value if isinstance(value, (int, float)) else ""
-                        for i in range(4):
-                            key = f"scale0_usage_e{i}"
-                            val = selector_stats_safe.get(key)
-                            value = val.get("value") if isinstance(val, dict) else None
-                            row[f"expert_usage_e{i}"] = value if isinstance(value, (int, float)) else ""
                         logger.log(row)
 
                     print('-' * print_num)

@@ -38,8 +38,7 @@ class MultiScaleTaskSelector(nn.Module):
         self.selector_map = []
         self.scale_selectors = None
         for idx, in_ch in enumerate(in_channels_list):
-            use_task_dw = self.mode == "task_dw" or idx not in self.hybrid_scales
-            if use_task_dw:
+            if idx == 2:
                 if mode == "expert":
                     selector = LowRankExpertSelector(
                         in_channels=in_ch,
@@ -58,7 +57,6 @@ class MultiScaleTaskSelector(nn.Module):
                 self.selectors.append(selector)
                 self.selector_map.append(selector)
             else:
-                # Hybrid scale: placeholder for future expert selector.
                 self.selector_map.append(None)
 
         self.scale_selectors = self.selector_map
