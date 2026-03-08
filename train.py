@@ -379,18 +379,20 @@ if __name__ == '__main__':
             unsup_out1, unsup_out2, unsup_out3 = gating_model(gating_unsup_input)
 
             #生成伪标签
-            fake_mask = torch.max(unsup_out1, dim=1)[1].long().detach()
+            fake_mask_1 = torch.max(unsup_out1, dim=1)[1].long().detach()
+            fake_mask_2 = torch.max(unsup_out2, dim=1)[1].long().detach()
+            fake_mask_3 = torch.max(unsup_out3, dim=1)[1].long().detach()
 
             # unsupervised loss
             if args.network == 'unet':
-                loss_unsup_seg1 = criterion(pred_train_unsup1, fake_mask)
-                loss_unsup_seg2 = criterion(pred_train_unsup2, fake_mask)
-                loss_unsup_seg3 = criterion(pred_train_unsup3, fake_mask)
+                loss_unsup_seg1 = criterion(pred_train_unsup1, fake_mask_1)
+                loss_unsup_seg2 = criterion(pred_train_unsup2, fake_mask_2)
+                loss_unsup_seg3 = criterion(pred_train_unsup3, fake_mask_3)
                 loss_train_unsup = loss_fn(loss_unsup_seg1, loss_unsup_seg2, loss_unsup_seg3)
             elif args.network == 'unet_shared':
-                loss_unsup_seg1 = criterion(pred_train_unsup1, fake_mask)
-                loss_unsup_seg2 = criterion(pred_train_unsup2, fake_mask)
-                loss_unsup_seg3 = criterion(pred_train_unsup3, fake_mask)
+                loss_unsup_seg1 = criterion(pred_train_unsup1, fake_mask_1)
+                loss_unsup_seg2 = criterion(pred_train_unsup2, fake_mask_2)
+                loss_unsup_seg3 = criterion(pred_train_unsup3, fake_mask_3)
                 loss_train_unsup = loss_fn(loss_unsup_seg1, loss_unsup_seg2, loss_unsup_seg3)
 
             loss_train_unsup = loss_train_unsup * unsup_weight
@@ -406,15 +408,15 @@ if __name__ == '__main__':
             #从有监督 DataLoader 的迭代器中取下一批有标签数据
             sup_index = next(dataset_train_sup)
             img_train_sup1 = sup_index['image'].float().cuda()
-            mask_train_sup = sup_index['mask'].cuda()
-            sdf_train_sup = sup_index['SDF'].cuda()
-            boundary_train_sup = sup_index['boundary'].cuda()
- 
+            mask_train_sup = sup_index['mask'].float().cuda()
+            sdf_train_sup = sup_index['SDF'].float().cuda()
+            boundary_train_sup = sup_index['boundary'].float().cuda()
+
             #前向传播
             if args.network == 'unet':
                 feat_sup1, pred_train_sup1 = segment_model(img_train_sup1)
-                feat_sup2, pred_train_sup2 = sdf_model(img_train_sup1)
-                feat_sup3, pred_train_sup3 = boundary_model(img_train_sup1)
+                feat_sup2, pred_train_sup2 = sdf_model(sdf_train_sup)
+                feat_sup3, pred_train_sup3 = boundary_model(boundary_train_sup)
             elif args.network == 'unet_shared':
                 features = shared_encoder(img_train_sup1)
                 feat_sup1, pred_train_sup1 = seg_decoder_1(*features)

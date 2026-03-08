@@ -77,7 +77,7 @@ class MultiGatingNetwork(nn.Module):
         self.gating3 = GatingModule(in_channels)
 
         self.mask_head = OutputHead(64, 2)
-        self.sdf_head = OutputHead(64, 1)
+        self.sdf_head = OutputHead(64, 2)
         self.bnd_head = OutputHead(64, 2)
     
     def forward(self, x):
