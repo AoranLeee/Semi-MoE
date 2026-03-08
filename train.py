@@ -208,7 +208,7 @@ if __name__ == '__main__':
     seg_decoder_3 = None
     if args.network == 'unet':
         segment_model = create_model('unet', cfg['IN_CHANNELS'], cfg['NUM_CLASSES'])
-        sdf_model = create_model('unet', cfg['IN_CHANNELS'], 1)
+        sdf_model = create_model('unet', cfg['IN_CHANNELS'], cfg['NUM_CLASSES'])
         boundary_model = create_model('unet', cfg['IN_CHANNELS'], cfg['NUM_CLASSES'])
         shared_encoder = None
     elif args.network == 'unet_shared':
@@ -380,16 +380,13 @@ if __name__ == '__main__':
 
             #生成伪标签
             fake_mask = torch.max(unsup_out1, dim=1)[1].long().detach()
-            if args.network == 'unet':
-                fake_bnd = torch.max(unsup_out3, dim=1)[1].detach()
-                fake_sdf = (torch.tanh(unsup_out2)).detach()
 
             # unsupervised loss
             if args.network == 'unet':
-                loss_unsup_seg = criterion(pred_train_unsup1, fake_mask)
-                loss_unsup_sdf = sdf_loss(torch.tanh(pred_train_unsup2), fake_sdf)
-                loss_unsup_bnd = imbalance_diceLoss(pred_train_unsup3, fake_bnd)
-                loss_train_unsup = loss_fn(loss_unsup_seg, loss_unsup_sdf, loss_unsup_bnd)
+                loss_unsup_seg1 = criterion(pred_train_unsup1, fake_mask)
+                loss_unsup_seg2 = criterion(pred_train_unsup2, fake_mask)
+                loss_unsup_seg3 = criterion(pred_train_unsup3, fake_mask)
+                loss_train_unsup = loss_fn(loss_unsup_seg1, loss_unsup_seg2, loss_unsup_seg3)
             elif args.network == 'unet_shared':
                 loss_unsup_seg1 = criterion(pred_train_unsup1, fake_mask)
                 loss_unsup_seg2 = criterion(pred_train_unsup2, fake_mask)
@@ -441,13 +438,13 @@ if __name__ == '__main__':
             #把主分割模型的预测 pred_train_sup1 与 gating 的分割输出 sup_out1 都与真实 mask 比较，二者损失求和
             #损失函数不同
             if args.network == 'unet':
-                loss_train_sup1 = (criterion(pred_train_sup1, mask_train_sup) + criterion(sup_out1, mask_train_sup))
-                loss_train_sup2 = sdf_loss(torch.tanh(pred_train_sup2), sdf_train_sup) + sdf_loss(torch.tanh(sup_out2), sdf_train_sup)
-                loss_train_sup3 = imbalance_diceLoss(pred_train_sup3, boundary_train_sup) + imbalance_diceLoss(sup_out3, boundary_train_sup)
+                loss_train_sup1 = criterion(pred_train_sup1, mask_train_sup) + criterion(sup_out1, mask_train_sup)
+                loss_train_sup2 = criterion(pred_train_sup2, mask_train_sup) + criterion(sup_out2, mask_train_sup)
+                loss_train_sup3 = criterion(pred_train_sup3, mask_train_sup) + criterion(sup_out3, mask_train_sup)
             elif args.network == 'unet_shared':
                 loss_train_sup1 = criterion(pred_train_sup1, mask_train_sup) + criterion(sup_out1, mask_train_sup)
-                loss_train_sup2 = criterion(pred_train_sup2, mask_train_sup)
-                loss_train_sup3 = criterion(pred_train_sup3, mask_train_sup)
+                loss_train_sup2 = criterion(pred_train_sup2, mask_train_sup) + criterion(sup_out2, mask_train_sup)
+                loss_train_sup3 = criterion(pred_train_sup3, mask_train_sup) + criterion(sup_out3, mask_train_sup)
 
             #使用 MultiTaskLoss 将三个子损失组合成一个标量有监督损失
             loss_train_sup = loss_fn(loss_train_sup1, loss_train_sup2, loss_train_sup3)
@@ -582,8 +579,8 @@ if __name__ == '__main__':
 
                     loss_val_sup1 = criterion(outputs_val1, mask_val)
                     if args.network == 'unet':
-                        loss_val_sup2 = sdf_loss(torch.tanh(outputs_val2), sdf_val)
-                        loss_val_sup3 = imbalance_diceLoss(outputs_val3, boundary_val)
+                        loss_val_sup2 = criterion(outputs_val2, mask_val)
+                        loss_val_sup3 = criterion(outputs_val3, mask_val)
                     elif args.network == 'unet_shared':
                         loss_val_sup2 = criterion(outputs_val2, mask_val)
                         loss_val_sup3 = criterion(outputs_val3, mask_val)
