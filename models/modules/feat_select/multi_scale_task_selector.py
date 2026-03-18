@@ -1,5 +1,4 @@
-from .task_dw_selector import TaskDWSelector, LowRankExpertSelector
-import torch
+﻿from .task_dw_selector import TaskDWSelector, LowRankExpertSelector
 import torch.nn as nn
 
 
@@ -29,10 +28,6 @@ class MultiScaleTaskSelector(nn.Module):
         self.num_tasks = num_tasks
         self.mode = mode
         self.hybrid_scales = set(hybrid_scales or [])
-        self.lambda_var = 5e-4
-        self.last_var_mean = None
-        self.last_loss_var = None
-        self.last_var_per_scale = {}
 
         self.selectors = nn.ModuleList()
         self.selector_map = []
@@ -46,7 +41,7 @@ class MultiScaleTaskSelector(nn.Module):
                         num_tasks=num_tasks,
                         K=4,
                         weak_prior=True,
-                        detach_input=detach_input
+                        detach_input=detach_input,
                     )
                 else:
                     selector = TaskDWSelector(
@@ -58,7 +53,7 @@ class MultiScaleTaskSelector(nn.Module):
                 self.selectors.append(selector)
                 self.selector_map.append(selector)
             else:
-                # Hybrid scale: placeholder for future expert selector.
+                # Hybrid scale: pass-through for now.
                 self.selector_map.append(None)
 
         self.scale_selectors = self.selector_map
@@ -69,48 +64,24 @@ class MultiScaleTaskSelector(nn.Module):
             raise ValueError("features length must match in_channels_list length")
 
         task_features = [[] for _ in range(self.num_tasks)]
-        var_list = []
-        loss_ent_list = []
-        self.last_var_per_scale = {}
-        for scale_idx, (feat, selector) in enumerate(zip(features, self.selector_map)):
+        for feat, selector in zip(features, self.selector_map):
             if selector is None:
-                # Hybrid scale: pass-through for now
                 for t in range(self.num_tasks):
                     task_features[t].append(feat)
-            else:
-                if self.mode == "expert":
-                    outputs = selector(feat, detach_selector=detach_selector)
-                    if hasattr(selector, "last_loss_ent") and selector.last_loss_ent is not None:
-                        loss_ent_list.append(selector.last_loss_ent)
-                else:
-                    outputs = selector(feat, alpha=selector.alpha, detach_selector=detach_selector)
-                    if self.mode == "task_dw" and selector.last_var is not None:
-                        var_list.append(selector.last_var)
-                        self.last_var_per_scale[scale_idx] = selector.last_var
-                for t, out in enumerate(outputs):
-                    task_features[t].append(out)
+                continue
 
-        if self.mode == "expert":
-            self.last_var_mean = None
-            if len(loss_ent_list) > 0:
-                self.last_loss_var = sum(loss_ent_list)
+            if self.mode == "expert":
+                outputs = selector(feat, detach_selector=detach_selector)
             else:
-                self.last_loss_var = None
-        elif self.mode != "task_dw":
-            self.last_var_mean = None
-            self.last_loss_var = None
-        elif len(var_list) > 0:
-            var_mean = torch.stack(var_list).mean()
-            self.last_var_mean = var_mean
-            self.last_loss_var = -self.lambda_var * var_mean
-        else:
-            self.last_var_mean = None
-            self.last_loss_var = None
-        return task_features #长度为3，每个元素是一个list，包含5个scale的特征
+                outputs = selector(feat, alpha=selector.alpha, detach_selector=detach_selector)
+
+            for t, out in enumerate(outputs):
+                task_features[t].append(out)
+
+        return task_features
 
     def get_all_weight_stats(self):
         stats = {}
-
         for scale_idx, selector in enumerate(self.selector_map):
             if selector is None:
                 continue

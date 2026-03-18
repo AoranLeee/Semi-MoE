@@ -150,7 +150,6 @@ class UNetEncoder(nn.Module):
         self.Conv3 = conv_block(ch_in=128, ch_out=256)
         self.Conv4 = conv_block(ch_in=256, ch_out=512)
         self.Conv5 = conv_block(ch_in=512, ch_out=1024)
-        self.last_features = None
 
     def forward(self, x):
         # encoding path
@@ -163,19 +162,7 @@ class UNetEncoder(nn.Module):
         x4 = self.Conv4(x4)
         x5 = self.Maxpool(x4)
         x5 = self.Conv5(x5)
-        self.last_features = [x1, x2, x3, x4, x5]
         return x1, x2, x3, x4, x5
-
-    def get_feature_stats(self):
-        if self.last_features is None:
-            return {}
-        stats = {}
-        for idx, feat in enumerate(self.last_features, start=1):
-            mean_c = feat.mean(dim=(0, 2, 3))
-            std_c = feat.std(dim=(0, 2, 3), unbiased=False)
-            stats[f"enc_l{idx}_mean"] = mean_c.mean().item()
-            stats[f"enc_l{idx}_std"] = std_c.mean().item()
-        return stats
 
 
 class UNetDecoder(nn.Module):
@@ -234,6 +221,32 @@ class U_Net(nn.Module):
         # return d1
 
 
+class UNetShared(nn.Module):
+    """
+    Shared encoder + three decoders (seg/sdf/bnd), without feature selector.
+    """
+    def __init__(self, in_channels=3, num_classes=1):
+        super(UNetShared, self).__init__()
+        self.encoder = UNetEncoder(in_channels=in_channels)
+        self.decoder_seg = UNetDecoder(num_classes=num_classes)
+        self.decoder_sdf = UNetDecoder(num_classes=1)
+        self.decoder_bnd = UNetDecoder(num_classes=num_classes)
+
+    def get_selector_weight_stats(self):
+        return {}
+
+    def forward(self, x, detach_selector=False):
+        features = self.encoder(x)
+        out_seg = self.decoder_seg(*features)
+        out_sdf = self.decoder_sdf(*features)
+        out_bnd = self.decoder_bnd(*features)
+        return {
+            "seg": out_seg,
+            "sdf": out_sdf,
+            "bnd": out_bnd,
+        }
+
+
 # Multi-task version with optional feature selector integration.
 class UNetMultiTask(nn.Module):
     def __init__(self, in_channels=3, num_classes=1, cfg=None):
@@ -244,38 +257,18 @@ class UNetMultiTask(nn.Module):
         self.decoder_bnd = UNetDecoder(num_classes=num_classes)
         self.num_tasks = 3
         self.selector = None
-        fs_cfg = cfg if cfg is not None else None
-        if fs_cfg is not None:
-            self.use_feat_selector = fs_cfg["ENABLE"]
-            assert fs_cfg["TYPE"] in ["task_dw", "hybrid", "expert"], "FEATURE_SELECT.TYPE must be one of [task_dw, hybrid, expert]"
-            if fs_cfg["TYPE"] == "hybrid" and len(fs_cfg["HYBRID_SCALES"]) == 0:
-                print("Warning: FEATURE_SELECT.TYPE is 'hybrid' but HYBRID_SCALES is empty.")
-            if self.use_feat_selector:
-                self.selector = MultiScaleTaskSelector(
-                    in_channels_list=[64, 128, 256, 512, 1024],
-                    num_tasks=self.num_tasks,
-                    mode=fs_cfg["TYPE"],
-                    hybrid_scales=fs_cfg["HYBRID_SCALES"],
-                )
-                print(
-                    "Selector params:",
-                    sum(p.numel() for p in self.selector.parameters()) / 1e6,
-                    "M",
-                )
-            if self.use_feat_selector and self.selector is None:
-                raise RuntimeError("FEATURE_SELECT.ENABLE is True but selector was not created.")
-        else:
-            self.use_feat_selector = False
+        self.use_feat_selector = False
 
-    def set_selector_alpha(self, alpha: float):
-        if not self.use_feat_selector or self.selector is None:
-            return
-        if hasattr(self.selector, "selectors"):
-            for selector in self.selector.selectors:
-                if hasattr(selector, "set_alpha"):
-                    selector.set_alpha(alpha)
-        elif hasattr(self.selector, "set_alpha"):
-            self.selector.set_alpha(alpha)
+        fs_cfg = cfg if cfg is not None else None
+        if fs_cfg is not None and bool(fs_cfg.get("ENABLE", False)):
+            assert fs_cfg["TYPE"] in ["task_dw", "hybrid", "expert"], "FEATURE_SELECT.TYPE must be one of [task_dw, hybrid, expert]"
+            self.selector = MultiScaleTaskSelector(
+                in_channels_list=[64, 128, 256, 512, 1024],
+                num_tasks=self.num_tasks,
+                mode=fs_cfg["TYPE"],
+                hybrid_scales=fs_cfg["HYBRID_SCALES"],
+            )
+            self.use_feat_selector = True
 
     def get_selector_weight_stats(self):
         if self.selector is None:
@@ -291,18 +284,12 @@ class UNetMultiTask(nn.Module):
         assert isinstance(features, list), "features must be a list of feature maps"
         assert len(features) == 5, "features must contain 5 scales (f1..f5)"
 
-        # ---- Task-aware feature selection (template integration) ----
-        if self.use_feat_selector:
+        # Selector is kept for compatibility but disabled during training by default.
+        if self.use_feat_selector and (not self.training):
             assert self.selector is not None, "selector must be initialized when USE_FEAT_SELECTOR is True"
             task_features = self.selector(features, detach_selector=detach_selector)
         else:
-            # replicate original features for each task
-            task_features = [
-                [f for f in features]
-                for _ in range(self.num_tasks)
-            ]
-        assert isinstance(task_features, list), "task_features must be a list"
-        assert len(task_features) == self.num_tasks, "task_features length must match num_tasks"
+            task_features = [[f for f in features] for _ in range(self.num_tasks)]
 
         out_seg = self.decoder_seg(*task_features[0])
         if self.num_tasks == 1:
@@ -549,6 +536,12 @@ def unet(in_channels, num_classes):
     return model
 
 
+def unet_shared(in_channels, num_classes):
+    model = UNetShared(in_channels=in_channels, num_classes=num_classes)
+    init_weights(model, 'kaiming')
+    return model
+
+
 def create_unet_encoder(in_channels):
     model = UNetEncoder(in_channels=in_channels)
     init_weights(model, 'kaiming')
@@ -585,3 +578,5 @@ def r2_attention_unet(in_channels, num_classes):
 #     output = output[0].data.cpu().numpy()
 #     # print(output)
 #     print(output.shape)
+
+

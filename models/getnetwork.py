@@ -2,14 +2,20 @@ import sys
 from models import *
 from models.networks_2d.unet import UNetMultiTask
 
-def get_network(network, in_channels, num_classes, **kwargs):
+def get_network(network, in_channels, num_classes, model_cfg=None, **kwargs):
+
+    # Backward compatibility: allow callers to pass cfg via kwargs.
+    if model_cfg is None and "cfg" in kwargs:
+        model_cfg = kwargs.pop("cfg")
 
     if network == "multi_gating_attention":
         net = multi_gating_attention(in_channels, num_classes)
     elif network == 'unet':
         net = unet(in_channels, num_classes)
+    elif network == 'unet_shared':
+        net = unet_shared(in_channels, num_classes)
     elif network == 'unet_multitask':
-        net = UNetMultiTask(in_channels, num_classes, **kwargs)
+        net = UNetMultiTask(in_channels, num_classes, cfg=model_cfg)
     elif network == 'unet_plusplus' or network == 'unet++':
         net = unet_plusplus(in_channels, num_classes)
     elif network == 'r2unet':

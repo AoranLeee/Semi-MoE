@@ -1,9 +1,6 @@
-FEATURE_SELECT:
-  ENABLE: True
+﻿FEATURE_SELECT:
+  ENABLE: False
   TYPE: "expert"
   HYBRID_SCALES: []
-  LR_MULTIPLIER: 3 #selector学习率
-  ALPHA_RAMPUP_EPOCHS: 20 #selector权重增加的epoch数
-  UNSUP_RAMPUP_EPOCHS: 80
   K: 4
-  WEAK_PRIOR: True #是否是先验专家
+  WEAK_PRIOR: True
