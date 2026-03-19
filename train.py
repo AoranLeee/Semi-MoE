@@ -43,7 +43,7 @@ def get_unsup_weight(epoch, unsup_warmup_type, max_unsup_weight, num_epochs, ram
 simplefilter(action='ignore', category=FutureWarning)
 
 os.environ["RANK"] = "0" 
-os.environ["WORLD_SIZE"] = "1" #单进�?单GPU
+os.environ["WORLD_SIZE"] = "1"
 os.environ["MASTER_ADDR"] = "localhost"
 os.environ["MASTER_PORT"] = "16672"
 #定义一个工厂函数，用于根据字符串名称构建并封装网络
@@ -343,6 +343,10 @@ if __name__ == '__main__':
     scheduler_warmup4 = GradualWarmupScheduler(
         optimizer_gate, multiplier=1.0, total_epoch=args.warm_up_duration, after_scheduler=exp_lr_scheduler4)
 
+    printed_memory = False
+    if torch.cuda.is_available():
+        torch.cuda.reset_peak_memory_stats(args.local_rank)
+
     if rank == args.rank_index:
         total_params = (
             count_params(model)
@@ -350,9 +354,6 @@ if __name__ == '__main__':
             + count_params(loss_fn)
         )
         print(f"Total params: {total_params / 1e6:.2f} M")
-        peak_alloc_gb = torch.cuda.max_memory_allocated(args.local_rank) / (1024 ** 3)
-        peak_reserved_gb = torch.cuda.max_memory_reserved(args.local_rank) / (1024 ** 3)
-        print(f"GPU Peak Memory - allocated: {peak_alloc_gb:.2f} GB, reserved: {peak_reserved_gb:.2f} GB")
 
     #记录训练开始时间，用于最后计算总耗时�?
     since = time.time()
@@ -493,6 +494,12 @@ if __name__ == '__main__':
             optimizer_main.step()
             optimizer_loss.step()
             optimizer_gate.step()
+
+            if rank == args.rank_index and not printed_memory:
+                torch.cuda.synchronize(args.local_rank)
+                peak_alloc_gb = torch.cuda.max_memory_allocated(args.local_rank) / (1024 ** 3)
+                print(f"GPU Peak Memory (peak allocated): {peak_alloc_gb:.2f} GB")
+                printed_memory = True
 
             loss_train = loss_total #总损�?
             train_loss_unsup += loss_train_unsup.item() #累加 epoch 累计�?，用于统计打�?
