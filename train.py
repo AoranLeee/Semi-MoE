@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 from torch.optim import lr_scheduler
 from torch.utils.data import DataLoader
@@ -23,7 +24,10 @@ from config.eval_config.eval import evaluate, evaluate_multi
 from warnings import simplefilter
 from aux_loss import imbalance_diceLoss, sdf_loss, MultiTaskLoss
 from csv_logger import CSVLogger
-
+from models.modules.uncertainty.uncertainty import (
+    symmetric_kl_uncertainty,
+    sdf_uncertainty
+)
 def sigmoid_rampup(current, rampup_length):
     if rampup_length == 0:
         return 1.0
@@ -157,6 +161,7 @@ if __name__ == '__main__':
     parser.add_argument('-l', '--lr', default=0.5, type=float)#初始学习率�?
     parser.add_argument('-g', '--gamma', default=0.5, type=float)#StepLR 的衰减因子：每过 step_size epoch，学习率乘以 gamma�?
     parser.add_argument('-u', '--unsup_weight', default=0.5, type=float)#无监督部�?loss 的权�?
+    parser.add_argument('--lambda_u', default=0.0, type=float)
     parser.add_argument('--unsup_warmup_type',default='linear',choices=['linear', 'sigmoid'])
     parser.add_argument('--loss', default='dice')#分割损失类型字符串，会用于构�?criterion（segmentation_loss(args.loss, False)�?
     parser.add_argument('-w', '--warm_up_duration', default=20)#学习率预热的 epoch �?
@@ -394,6 +399,20 @@ if __name__ == '__main__':
         val_loss_sup_2 = 0.0 #验证集有监督 SDF 分支
         val_loss_sup_3 = 0.0 #验证集有监督边界分支
 
+        # ===== Uncertainty logging =====
+        uncert_stats = {
+            "U_seg": 0.0, "U_sdf": 0.0, "U_bnd": 0.0,
+            "W_seg": 0.0, "W_sdf": 0.0, "W_bnd": 0.0,
+            "raw_seg": 0.0, "raw_sdf": 0.0, "raw_bnd": 0.0,
+            "weighted_seg": 0.0, "weighted_sdf": 0.0, "weighted_bnd": 0.0,
+            "count": 0
+        }
+
+        uncert_seg_dist = {
+            "mean": 0.0,
+            "max": 0.0,
+            "min": 0.0
+        }
         #线性增加无监督 loss 的权�?
         # unsup_weight set before batch loop (sigmoid ramp-up)
         dist.barrier() #同步所有进�?
@@ -429,17 +448,80 @@ if __name__ == '__main__':
             #通过 gating 网络计算输出，融合后的分�?logits，SDF logits，边�?logits,用于生成伪标�?
             unsup_out1, unsup_out2, unsup_out3 = gating_model(gating_unsup_input)
 
-            #生成伪标�?
-            fake_bnd = torch.max(unsup_out3, dim=1)[1].detach()
-            fake_sdf = (torch.tanh(unsup_out2)).detach() #tanh（将 SDF 值压缩到 [-1,1]�?
-            fake_mask = torch.max(unsup_out1, dim=1)[1].long().detach()
-            
             #计算无监督损�?
-            loss_unsup_seg = criterion(pred_train_unsup1, fake_mask)
-            loss_unsup_sdf = sdf_loss(torch.tanh(pred_train_unsup2), fake_sdf)
-            loss_unsup_bnd = imbalance_diceLoss(pred_train_unsup3, fake_bnd)
-            loss_train_unsup = loss_fn(loss_unsup_seg, loss_unsup_sdf, loss_unsup_bnd)
+            # ======================
+            # Uncertainty computation (UNSUP ONLY, pixel-wise)
+            # ======================
+            U_seg = symmetric_kl_uncertainty(pred_train_unsup1, unsup_out1.detach())  # (B,H,W)
+            U_sdf = sdf_uncertainty(pred_train_unsup2, unsup_out2.detach())            # (B,H,W)
+            U_bnd = symmetric_kl_uncertainty(pred_train_unsup3, unsup_out3.detach())   # (B,H,W)
 
+            # 1. pseudo label from teacher
+            pseudo_seg = torch.argmax(unsup_out1.detach(), dim=1)  # (B,H,W)
+            pseudo_bnd = torch.argmax(unsup_out3.detach(), dim=1)
+
+            # 2. pixel-wise CE
+            loss_map_seg = F.cross_entropy(pred_train_unsup1, pseudo_seg, reduction='none')
+            loss_map_bnd = F.cross_entropy(pred_train_unsup3, pseudo_bnd, reduction='none')
+
+            # 3. pixel-wise SDF loss
+            loss_map_sdf = (torch.tanh(pred_train_unsup2) - torch.tanh(unsup_out2.detach())) ** 2
+            loss_map_sdf = loss_map_sdf.squeeze(1)
+
+            # raw (unweighted) pixel loss for logging
+            loss_unsup_seg_raw = loss_map_seg.mean()
+            loss_unsup_sdf_raw = loss_map_sdf.mean()
+            loss_unsup_bnd_raw = loss_map_bnd.mean()
+
+            # 4. uncertainty weighting (pixel-wise)
+            W_seg = 1.0 / (1.0 + U_seg)
+            W_sdf = 1.0 / (1.0 + U_sdf)
+            W_bnd = 1.0 / (1.0 + U_bnd)
+
+            loss_unsup_seg = (W_seg * loss_map_seg).mean()
+            loss_unsup_sdf = (W_sdf * loss_map_sdf).mean()
+            loss_unsup_bnd = (W_bnd * loss_map_bnd).mean()
+
+            # 5. uncertainty regularization
+            lambda_u = args.lambda_u
+            loss_uncert_reg = (
+                U_seg.mean() +
+                U_sdf.mean() +
+                U_bnd.mean()
+            )
+
+            with torch.no_grad():
+                # weights
+                w_seg = W_seg.mean()
+                w_sdf = W_sdf.mean()
+                w_bnd = W_bnd.mean()
+
+                # accumulate
+                uncert_stats["U_seg"] += U_seg.mean().item()
+                uncert_stats["U_sdf"] += U_sdf.mean().item()
+                uncert_stats["U_bnd"] += U_bnd.mean().item()
+
+                uncert_stats["W_seg"] += w_seg.item()
+                uncert_stats["W_sdf"] += w_sdf.item()
+                uncert_stats["W_bnd"] += w_bnd.item()
+
+                uncert_stats["raw_seg"] += loss_unsup_seg_raw.item()
+                uncert_stats["raw_sdf"] += loss_unsup_sdf_raw.item()
+                uncert_stats["raw_bnd"] += loss_unsup_bnd_raw.item()
+
+                uncert_stats["weighted_seg"] += loss_unsup_seg.item()
+                uncert_stats["weighted_sdf"] += loss_unsup_sdf.item()
+                uncert_stats["weighted_bnd"] += loss_unsup_bnd.item()
+
+                uncert_stats["count"] += 1
+
+                # seg uncertainty distribution
+                uncert_seg_dist["mean"] += U_seg.mean().item()
+                uncert_seg_dist["max"] += U_seg.max().item()
+                uncert_seg_dist["min"] += U_seg.min().item()
+
+            # 6. multitask weighting + uncertainty regularization
+            loss_train_unsup = loss_fn(loss_unsup_seg, loss_unsup_sdf, loss_unsup_bnd) + lambda_u * loss_uncert_reg
             loss_train_unsup = loss_train_unsup * unsup_weight
             with model.no_sync():
                 with gating_model.no_sync():
@@ -529,6 +611,36 @@ if __name__ == '__main__':
                 train_epoch_loss_sup1, train_epoch_loss_sup2, train_epoch_loss_sup3, train_epoch_loss_unsup, train_epoch_loss = print_train_loss(train_loss_sup_1, train_loss_sup_2, train_loss_sup_3, train_loss_unsup, train_loss, num_batches, print_num, print_num_minus)
                 train_thr, train_jc, train_dc = print_train_core_metrics(cfg['NUM_CLASSES'], score_list_train1, mask_list_train, print_num_minus)
                 print('| unsup_weight: {:.4f}, warmup_type: {}'.format(unsup_weight, args.unsup_warmup_type).ljust(print_num_minus, ' '), '|')
+                # ===== Uncertainty print =====
+                if uncert_stats["count"] > 0:
+                    c = uncert_stats["count"]
+
+                    U_seg_avg = uncert_stats["U_seg"] / c
+                    U_sdf_avg = uncert_stats["U_sdf"] / c
+                    U_bnd_avg = uncert_stats["U_bnd"] / c
+
+                    W_seg_avg = uncert_stats["W_seg"] / c
+                    W_sdf_avg = uncert_stats["W_sdf"] / c
+                    W_bnd_avg = uncert_stats["W_bnd"] / c
+
+                    raw_seg_avg = uncert_stats["raw_seg"] / c
+                    raw_sdf_avg = uncert_stats["raw_sdf"] / c
+                    raw_bnd_avg = uncert_stats["raw_bnd"] / c
+
+                    weighted_seg_avg = uncert_stats["weighted_seg"] / c
+                    weighted_sdf_avg = uncert_stats["weighted_sdf"] / c
+                    weighted_bnd_avg = uncert_stats["weighted_bnd"] / c
+
+                    U_seg_mean = uncert_seg_dist["mean"] / c
+                    U_seg_max = uncert_seg_dist["max"] / c
+                    U_seg_min = uncert_seg_dist["min"] / c
+
+                    print('| Uncertainty Stats '.ljust(print_num_minus, ' '), '|')
+                    print(f'| U(seg/sdf/bnd): {U_seg_avg:.4f} / {U_sdf_avg:.4f} / {U_bnd_avg:.4f}'.ljust(print_num_minus, ' '), '|')
+                    print(f'| W(seg/sdf/bnd): {W_seg_avg:.4f} / {W_sdf_avg:.4f} / {W_bnd_avg:.4f}'.ljust(print_num_minus, ' '), '|')
+                    print(f'| RawLoss(seg/sdf/bnd): {raw_seg_avg:.4f} / {raw_sdf_avg:.4f} / {raw_bnd_avg:.4f}'.ljust(print_num_minus, ' '), '|')
+                    print(f'| WeightedLoss(seg/sdf/bnd): {weighted_seg_avg:.4f} / {weighted_sdf_avg:.4f} / {weighted_bnd_avg:.4f}'.ljust(print_num_minus, ' '), '|')
+                    print(f'| U_seg dist (mean/max/min): {U_seg_mean:.4f} / {U_seg_max:.4f} / {U_seg_min:.4f}'.ljust(print_num_minus, ' '), '|')
             with torch.no_grad():
                 model.eval()
                 gating_model.eval()
@@ -540,7 +652,6 @@ if __name__ == '__main__':
                     boundary_val = data['boundary'].cuda()
                     name_val = data['ID']
 
-               
                     outputs = model(inputs_val1)
                     feat1 = outputs["seg"][0]
                     outputs_val1 = outputs["seg"][1]
@@ -550,7 +661,6 @@ if __name__ == '__main__':
                     outputs_val3 = outputs["bnd"][1]
                     gating_input = torch.cat([feat1, feat2, feat3], dim=1)
                     val_out1, val_out2, val_out3 = gating_model(gating_input)
-
 
                     if i == 0:
                         score_list_val1 = val_out1
@@ -601,6 +711,30 @@ if __name__ == '__main__':
                             "dc": train_dc,
                             "unsup_weight": unsup_weight,
                         }
+                        if uncert_stats["count"] > 0:
+                            c = uncert_stats["count"]
+
+                            row.update({
+                                "U_seg": uncert_stats["U_seg"] / c,
+                                "U_sdf": uncert_stats["U_sdf"] / c,
+                                "U_bnd": uncert_stats["U_bnd"] / c,
+
+                                "W_seg": uncert_stats["W_seg"] / c,
+                                "W_sdf": uncert_stats["W_sdf"] / c,
+                                "W_bnd": uncert_stats["W_bnd"] / c,
+
+                                "raw_seg": uncert_stats["raw_seg"] / c,
+                                "raw_sdf": uncert_stats["raw_sdf"] / c,
+                                "raw_bnd": uncert_stats["raw_bnd"] / c,
+
+                                "weighted_seg": uncert_stats["weighted_seg"] / c,
+                                "weighted_sdf": uncert_stats["weighted_sdf"] / c,
+                                "weighted_bnd": uncert_stats["weighted_bnd"] / c,
+
+                                "U_seg_mean": uncert_seg_dist["mean"] / c,
+                                "U_seg_max": uncert_seg_dist["max"] / c,
+                                "U_seg_min": uncert_seg_dist["min"] / c,
+                            })
                         logger.log(row)
 
                     print('-' * print_num)
