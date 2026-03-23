@@ -96,6 +96,24 @@ def imbalance_diceLoss(y_pred, y_true, smooth=1e-8):
     return dice.mean()
 
 
+def dice_loss_map(y_pred, y_true, smooth=1e-8, reduction='none'):
+    y_pred = F.softmax(y_pred, dim=1)
+    y_true_onehot = to_onehot(y_pred, y_true)
+
+    intersection = y_pred * y_true_onehot
+    union = y_pred + y_true_onehot
+    dice_map = 1 - (2 * intersection + smooth) / (union + smooth)
+    dice_map = dice_map.sum(dim=1)  # (B,H,W)
+
+    if reduction == 'none':
+        return dice_map
+    if reduction == 'mean':
+        return dice_map.mean()
+    if reduction == 'sum':
+        return dice_map.sum()
+    raise ValueError(f"Unsupported reduction for dice_loss_map: {reduction}")
+
+
 class MultiTaskLoss(nn.Module):
     def __init__(self):
         super().__init__()

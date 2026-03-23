@@ -22,11 +22,12 @@ from config.warmup_config.warmup import GradualWarmupScheduler
 from config.train_test_config.train_test_config import print_train_loss, print_val_loss, print_val_eval_sup, save_val_best_sup_2d, print_best_sup
 from config.eval_config.eval import evaluate, evaluate_multi
 from warnings import simplefilter
-from aux_loss import imbalance_diceLoss, sdf_loss, MultiTaskLoss
+from aux_loss import imbalance_diceLoss, sdf_loss, MultiTaskLoss, dice_loss_map
 from csv_logger import CSVLogger
 from models.modules.uncertainty.uncertainty import (
     symmetric_kl_uncertainty,
-    sdf_uncertainty
+    sdf_uncertainty,
+    expert_uncertainty
 )
 def sigmoid_rampup(current, rampup_length):
     if rampup_length == 0:
@@ -154,27 +155,27 @@ if __name__ == '__main__':
     #选择数据集名称，GlasS或CRAG
     parser.add_argument('--dataset_name', default='CRAG', help='CREMI, GlaS, ISIC-2017')
     parser.add_argument('--sup_mark', default='35')#用于拼接训练集目录名
-    parser.add_argument('--unsup_mark', default='138')#按标注数量分割的数据集命名约�?
-    parser.add_argument('-b', '--batch_size', default=2, type=int)#批大�?
-    parser.add_argument('-e', '--num_epochs', default=200, type=int)#训练�?epoch �?
-    parser.add_argument('-s', '--step_size', default=50, type=int)#学习�?StepLR 的步幅（�?step_size �?epoch 乘以 gamma�?
-    parser.add_argument('-l', '--lr', default=0.5, type=float)#初始学习率�?
-    parser.add_argument('-g', '--gamma', default=0.5, type=float)#StepLR 的衰减因子：每过 step_size epoch，学习率乘以 gamma�?
-    parser.add_argument('-u', '--unsup_weight', default=0.5, type=float)#无监督部�?loss 的权�?
-    parser.add_argument('--lambda_u', default=0.0, type=float)
+    parser.add_argument('--unsup_mark', default='138')#按标注数量分割的数据集命名约
+    parser.add_argument('-b', '--batch_size', default=2, type=int)#批大
+    parser.add_argument('-e', '--num_epochs', default=200, type=int)#训练epoch
+    parser.add_argument('-s', '--step_size', default=50, type=int)#学习StepLR 的步幅（step_size epoch 乘以 gamma
+    parser.add_argument('-l', '--lr', default=0.5, type=float)#初始学习率
+    parser.add_argument('-g', '--gamma', default=0.5, type=float)#StepLR 的衰减因子：每过 step_size epoch，学习率乘以 gammav
+    parser.add_argument('-u', '--unsup_weight', default=0.5, type=float)#无监督部loss 的权
+    parser.add_argument('--lambda_u', default=0.0, type=float) #无监督不确定性正则化项的权重
     parser.add_argument('--unsup_warmup_type',default='linear',choices=['linear', 'sigmoid'])
-    parser.add_argument('--loss', default='dice')#分割损失类型字符串，会用于构�?criterion（segmentation_loss(args.loss, False)�?
-    parser.add_argument('-w', '--warm_up_duration', default=20)#学习率预热的 epoch �?
+    parser.add_argument('--loss', default='dice')#分割损失类型字符串，会用于构vcriterion（segmentation_loss(args.loss, False)v
+    parser.add_argument('-w', '--warm_up_duration', default=20)#学习率预热的 epoch v
     parser.add_argument('--momentum', default=0.9, type=float)
     parser.add_argument('--wd', default=-5, type=float, help='weight decay pow')
 
-    parser.add_argument('-i', '--display_iter', default=5, type=int)#控制多少次迭代打印一次训练中间信�?
+    parser.add_argument('-i', '--display_iter', default=5, type=int)#控制多少次迭代打印一次训练中间信v
     parser.add_argument('-n', '--network', default='unet_shared', choices=['unet_shared'], type=str)
     #Gating 网络名称
     parser.add_argument('-gn', '--gating_network', default='multi_gating_attention', type=str)
     parser.add_argument('--exp_name', default='exp_shared_encoder_baseline', type=str)
     parser.add_argument('--local_rank', default=0, type=int)
-    parser.add_argument('--rank_index', default=0, help='0, 1, 2, 3')#主进程的 rank，一般设�?0
+    parser.add_argument('--rank_index', default=0, help='0, 1, 2, 3')#主进程的 rank，一般设v0
     parser.add_argument('--visdom_port', default=16672)
     args = parser.parse_args()
 
@@ -182,8 +183,8 @@ if __name__ == '__main__':
     dist.init_process_group(backend='gloo', init_method='env://')
 
     rank = torch.distributed.get_rank()    #获取当前进程在全局通信中的 rank
-    ngpus_per_node = torch.cuda.device_count()    #返回当前主机可见�?GPU 数量
-    init_seeds(1)    #调用自定义的随机种子初始化函�?
+    ngpus_per_node = torch.cuda.device_count()    #返回当前主机可见vGPU 数量
+    init_seeds(1)    #调用自定义的随机种子初始化函v
 
     logger = None
     if rank == args.rank_index:
@@ -192,8 +193,8 @@ if __name__ == '__main__':
         logger = CSVLogger(os.path.join(log_dir, f"{args.exp_name}.csv"))
 
     dataset_name = args.dataset_name
-    #调用配置函数 dataset_cfg（在 dataset_cfg.py 中）来加载与所选数据集相关的常�?路径字典
-    cfg = dataset_cfg(dataset_name)#获取数据集配置字�?
+    #调用配置函数 dataset_cfg（在 dataset_cfg.py 中）来加载与所选数据集相关的常v路径字典
+    cfg = dataset_cfg(dataset_name)#获取数据集配置字v
     print_num = 77 + (cfg['NUM_CLASSES'] - 3) * 14
     print_num_minus = print_num - 2
 
@@ -201,7 +202,7 @@ if __name__ == '__main__':
     #checkpoints/GlaS
     path_trained_models = cfg['PATH_TRAINED_MODEL'] + '/' + str(dataset_name)
     if rank == args.rank_index:
-        os.makedirs(path_trained_models, exist_ok=True)#创建主目�?
+        os.makedirs(path_trained_models, exist_ok=True)#创建主目v
     #checkpoints/GlaS/unet-l=0.01-e=50-s=20-g=0.5-b=2-uw=0.5-w=20-35-138
     path_trained_models = path_trained_models + '/' + args.network + '-l=' + str(args.lr) + '-e=' + str(args.num_epochs) + '-s=' + str(args.step_size) + '-g=' + str(args.gamma) + '-b=' + str(args.batch_size) + '-uw=' + str(args.unsup_weight) + '-w=' + str(args.warm_up_duration) + '-' + str(args.sup_mark) + '-' + str(args.unsup_mark)
     if rank == args.rank_index:#创建子目录，存放训练模型
@@ -221,18 +222,18 @@ if __name__ == '__main__':
     #构建归一化（normalization）层/函数，把像素值标准化到训练所需分布
     data_normalize = data_normalize_2d(cfg['MEAN'], cfg['STD'])
 
-    dataset_train_unsup = get_imagefolder( #创建“无监督训练集”（unsup�?
-        #无监督训练集的路径dataset/CRAG/train_unsup_138，从训练�?38之后作为训练�?
+    dataset_train_unsup = get_imagefolder( #创建“无监督训练集”（unsupv
+        #无监督训练集的路径dataset/CRAG/train_unsup_138，从训练v38之后作为训练v
         data_dir=cfg['PATH_DATASET'] + '/train_unsup_' + args.unsup_mark,
         #无监督训练集的图像预处理
         data_transform_1=data_transforms['train'],
         data_normalize_1=data_normalize,
         sup=False,
-        num_images=None,#不限制图像数量，使用目录中全部图�?
+        num_images=None,#不限制图像数量，使用目录中全部图v
     )#返回 Dataset 对象
-    num_images_unsup = len(dataset_train_unsup)#无监督训练集的图像数�?
+    num_images_unsup = len(dataset_train_unsup)#无监督训练集的图像数v
 
-    #dataset/CRAG/train_sup_35，从训练集前35张作为有监督训练�?
+    #dataset/CRAG/train_sup_35，从训练集前35张作为有监督训练v
     dataset_train_sup = get_imagefolder(
         data_dir=cfg['PATH_DATASET'] + '/train_sup_' + args.sup_mark,
         data_transform_1=data_transforms['train'],
@@ -240,7 +241,7 @@ if __name__ == '__main__':
         sup=True,
         num_images=num_images_unsup,
     )
-    dataset_val = get_imagefolder( #创建验证�?
+    dataset_val = get_imagefolder( #创建验证v
         data_dir=cfg['PATH_DATASET'] + '/val',
         data_transform_1=data_transforms['val'],
         data_normalize_1=data_normalize,
@@ -248,23 +249,23 @@ if __name__ == '__main__':
         num_images=None,
     )
 
-    #创建训练集和验证集的采样器，shuffle=True 表示在每�?epoch 开始时会对索引打乱
+    #创建训练集和验证集的采样器，shuffle=True 表示在每vepoch 开始时会对索引打乱
     train_sampler_sup = torch.utils.data.distributed.DistributedSampler(dataset_train_sup, shuffle=True)
     train_sampler_unsup = torch.utils.data.distributed.DistributedSampler(dataset_train_unsup, shuffle=True)
     val_sampler = torch.utils.data.distributed.DistributedSampler(dataset_val, shuffle=False)
 
-    # 创建数据加载�?
-    dataloaders = dict() #初始化一个字典，用来保存三个 DataLoader（train_sup / train_unsup / val�?
-    #注意：这�?shuffle=False，因�?DistributedSampler 自己负责采样和打乱；如果同时�?shuffle=True 会冲�?无效�?
+    # 创建数据加载v
+    dataloaders = dict() #初始化一个字典，用来保存三个 DataLoader（train_sup / train_unsup / valv
+    #注意：这vshuffle=False，因vDistributedSampler 自己负责采样和打乱；如果同时vshuffle=True 会冲v无效v
     dataloaders['train_sup'] = DataLoader(dataset_train_sup, batch_size=args.batch_size, shuffle=False, pin_memory=True, num_workers=8, sampler=train_sampler_sup)
     dataloaders['train_unsup'] = DataLoader(dataset_train_unsup, batch_size=args.batch_size, shuffle=False, pin_memory=True, num_workers=8, sampler=train_sampler_unsup)
     dataloaders['val'] = DataLoader(dataset_val, batch_size=args.batch_size, shuffle=False, pin_memory=True, num_workers=8, sampler=val_sampler)
 
-    #len(dataloader) 返回�?DataLoader 在当前设置下的迭代次数（即总样本数 / batch_size，受 sampler 影响�?
-    #计算并记录每�?DataLoader 在一�?epoch 中的批次�?
+    #len(dataloader) 返回vDataLoader 在当前设置下的迭代次数（即总样本数 / batch_size，受 sampler 影响v
+    #计算并记录每vDataLoader 在一vepoch 中的批次v
     num_batches = {'train_sup': len(dataloaders['train_sup']), 'train_unsup': len(dataloaders['train_unsup']), 'val': len(dataloaders['val'])}
 
-    #输入通道数为 cfg['IN_CHANNELS']，输出通道�?cfg['NUM_CLASSES']（分割类别数�?
+    #输入通道数为 cfg['IN_CHANNELS']，输出通道vcfg['NUM_CLASSES']（分割类别数v
     model = create_model(
         network=args.network,
         in_channels=cfg['IN_CHANNELS'],
@@ -272,7 +273,11 @@ if __name__ == '__main__':
         local_rank=args.local_rank,
         normalize_outputs=True,
     )
-    #输入的是第一层特征图，通道数为64；一共三个任务，所以乘3，和IN_CHANNELS其实没关�?
+    model_for_aux = model.module if hasattr(model, "module") else model
+    if not (hasattr(model_for_aux, "decoder_seg") and hasattr(model_for_aux.decoder_seg, "Conv_1x1")):
+        raise AttributeError("Current model does not expose decoder_seg.Conv_1x1 for SDF aux logits.")
+    Conv_1x1 = model_for_aux.decoder_seg.Conv_1x1
+    #输入的是第一层特征图，通道数为64；一共三个任务，所以乘3，和IN_CHANNELS其实没关v
     gating_model = create_model(
         network=args.gating_network,
         in_channels=cfg['IN_CHANNELS'] * 64,
@@ -289,14 +294,14 @@ if __name__ == '__main__':
 
     dist.barrier()
 
-    #构建分割损失实例（dice、ce、bce、bcebound�?
+    #构建分割损失实例（dice、ce、bce、bceboundv
     criterion = segmentation_loss(args.loss, False).cuda()
-    #用于组合/加权多个子损失的包装�?
+    #用于组合/加权多个子损失的包装v
     loss_fn = MultiTaskLoss().cuda()
 
-    #�?model 创建一�?SGD 优化�?
-    model_for_opt = model.module if hasattr(model, "module") else model #检�?model 是否使用了分布式数据
-    #获取 model 的编码器、解码器和选择模块的参数列表，准备传递给优化�?
+    #vmodel 创建一vSGD 优化v
+    model_for_opt = model.module if hasattr(model, "module") else model #检vmodel 是否使用了分布式数据
+    #获取 model 的编码器、解码器和选择模块的参数列表，准备传递给优化v
     if (
         model_for_opt.encoder is not None
         and model_for_opt.decoder_seg is not None
@@ -360,12 +365,12 @@ if __name__ == '__main__':
         )
         print(f"Total params: {total_params / 1e6:.2f} M")
 
-    #记录训练开始时间，用于最后计算总耗时�?
+    #记录训练开始时间，用于最后计算总耗时v
     since = time.time()
-    #用作计数器（在每�?epoch 开始处递增），用于决定何时打印/记录信息
+    #用作计数器（在每vepoch 开始处递增），用于决定何时打印/记录信息
     count_iter = 0
 
-    #记录验证集上最佳评估指标的列表（初始化�?0�?
+    #记录验证集上最佳评估指标的列表（初始化v0v
     best_val_eval_list = [0 for i in range(4)]
 
     for epoch in range(args.num_epochs):#200
@@ -378,22 +383,22 @@ if __name__ == '__main__':
         )
 
         count_iter += 1
-        #每隔 display_iter）个 epoch 记录一次时�?
+        #每隔 display_iter）个 epoch 记录一次时v
         if (count_iter - 1) % args.display_iter == 0:
             begin_time = time.time()
 
-        #设置 epoch 号，以便 DistributedSampler 在每�?epoch 开始时打乱数据
+        #设置 epoch 号，以便 DistributedSampler 在每vepoch 开始时打乱数据
         dataloaders['train_sup'].sampler.set_epoch(epoch)
         dataloaders['train_unsup'].sampler.set_epoch(epoch)
         model.train()
         gating_model.train()
 
-        #初始化累加的 epoch 损失�?
-        train_loss_sup_1 = 0.0 #有监督分割分�?
-        train_loss_sup_2 = 0.0 #有监�?SDF 分支
-        train_loss_sup_3 = 0.0 #有监督边界分�?
-        train_loss_unsup = 0.0 #无监督部�?
-        train_loss = 0.0 #总损�?
+        #初始化累加的 epoch 损失v
+        train_loss_sup_1 = 0.0 #有监督分割分v
+        train_loss_sup_2 = 0.0 #有监vSDF 分支
+        train_loss_sup_3 = 0.0 #有监督边界分v
+        train_loss_unsup = 0.0 #无监督部v
+        train_loss = 0.0 #总损v
 
         val_loss_sup_1 = 0.0 #验证集有监督分割分支
         val_loss_sup_2 = 0.0 #验证集有监督 SDF 分支
@@ -413,9 +418,9 @@ if __name__ == '__main__':
             "max": 0.0,
             "min": 0.0
         }
-        #线性增加无监督 loss 的权�?
+        #线性增加无监督 loss 的权v
         # unsup_weight set before batch loop (sigmoid ramp-up)
-        dist.barrier() #同步所有进�?
+        dist.barrier() #同步所有进v
 
         #创建两个迭代器，分别用于无监督和有监督训练集，在 epoch 内通过 next() 按需取批
         dataset_train_sup = iter(dataloaders['train_sup'])
@@ -426,54 +431,72 @@ if __name__ == '__main__':
             optimizer_loss.zero_grad()
             optimizer_gate.zero_grad()
 
-            #无监�?--------------------------------------
+            #无监v--------------------------------------
             #从无监督 DataLoader 的迭代器中取下一批无标签数据
             unsup_index = next(dataset_train_unsup)
             img_train_unsup1 = unsup_index['image'].float().cuda()#取出图像张量并转换为 float，移动到当前 GPU
-            #前向传播：通过三个模型分别计算特征feat和分割预�?logits的pred
+            #前向传播：通过三个模型分别计算特征feat和分割预vlogits的pred
             outputs = model(img_train_unsup1)
             feat_unsup1 = outputs["seg"][0]
             pred_train_unsup1 = outputs["seg"][1]
             feat_unsup2 = outputs["sdf"][0]
             pred_train_unsup2 = outputs["sdf"][1]
+            pred_train_unsup2_aux = Conv_1x1(feat_unsup2)
             feat_unsup3 = outputs["bnd"][0]
             pred_train_unsup3 = outputs["bnd"][1]
 
-            #�?channel 维度上拼接三路特征，作为 gating 网络的输�?
+            #vchannel 维度上拼接三路特征，作为 gating 网络的输v
             gating_unsup_input = torch.cat([
                 feat_unsup1.detach(),
                 feat_unsup2.detach(),
                 feat_unsup3.detach()
             ], dim=1)
-            #通过 gating 网络计算输出，融合后的分�?logits，SDF logits，边�?logits,用于生成伪标�?
+            #通过 gating 网络计算输出，融合后的分vlogits，SDF logits，边vlogits,用于生成伪标v
             unsup_out1, unsup_out2, unsup_out3 = gating_model(gating_unsup_input)
 
-            #计算无监督损�?
+            #计算无监督损v
             # ======================
-            # Uncertainty computation (UNSUP ONLY, pixel-wise)
+            # Uncertainty computation (UNSUP ONLY, expert-vs-expert)
             # ======================
-            U_seg = symmetric_kl_uncertainty(pred_train_unsup1, unsup_out1.detach())  # (B,H,W)
-            U_sdf = sdf_uncertainty(pred_train_unsup2, unsup_out2.detach())            # (B,H,W)
-            U_bnd = symmetric_kl_uncertainty(pred_train_unsup3, unsup_out3.detach())   # (B,H,W)
+            U_seg, U_sdf, U_bnd = expert_uncertainty(
+                pred_train_unsup1,
+                pred_train_unsup2_aux,
+                pred_train_unsup3
+            )
 
-            # 1. pseudo label from teacher
+            # pseudo label
             pseudo_seg = torch.argmax(unsup_out1.detach(), dim=1)  # (B,H,W)
             pseudo_bnd = torch.argmax(unsup_out3.detach(), dim=1)
 
-            # 2. pixel-wise CE
-            loss_map_seg = F.cross_entropy(pred_train_unsup1, pseudo_seg, reduction='none')
-            loss_map_bnd = F.cross_entropy(pred_train_unsup3, pseudo_bnd, reduction='none')
+            # seg (CE pixel-wise)
+            loss_map_seg = F.cross_entropy(
+                pred_train_unsup1,
+                pseudo_seg,
+                reduction='none'
+            )  # (B,H,W)
 
-            # 3. pixel-wise SDF loss
+            # bnd (dice pixel-wise)
+            loss_map_bnd = dice_loss_map(
+                pred_train_unsup3,
+                pseudo_bnd,
+                reduction='none'
+            )  # (B,H,W)
+
+            # sdf (pixel-wise MSE)
             loss_map_sdf = (torch.tanh(pred_train_unsup2) - torch.tanh(unsup_out2.detach())) ** 2
-            loss_map_sdf = loss_map_sdf.squeeze(1)
+            loss_map_sdf = loss_map_sdf.squeeze(1)  # (B,H,W)
 
-            # raw (unweighted) pixel loss for logging
+            # raw loss (for logging)
             loss_unsup_seg_raw = loss_map_seg.mean()
             loss_unsup_sdf_raw = loss_map_sdf.mean()
             loss_unsup_bnd_raw = loss_map_bnd.mean()
 
-            # 4. uncertainty weighting (pixel-wise)
+            # U must not backprop through weighting branch
+            U_seg = U_seg.detach()
+            U_sdf = U_sdf.detach()
+            U_bnd = U_bnd.detach()
+
+            # uncertainty weighting (pixel-wise)
             W_seg = 1.0 / (1.0 + U_seg)
             W_sdf = 1.0 / (1.0 + U_sdf)
             W_bnd = 1.0 / (1.0 + U_bnd)
@@ -482,14 +505,13 @@ if __name__ == '__main__':
             loss_unsup_sdf = (W_sdf * loss_map_sdf).mean()
             loss_unsup_bnd = (W_bnd * loss_map_bnd).mean()
 
-            # 5. uncertainty regularization
+            # optional uncertainty regularization (default lambda_u = 0)
             lambda_u = args.lambda_u
             loss_uncert_reg = (
                 U_seg.mean() +
                 U_sdf.mean() +
                 U_bnd.mean()
             )
-
             with torch.no_grad():
                 # weights
                 w_seg = W_seg.mean()
@@ -527,7 +549,7 @@ if __name__ == '__main__':
                 with gating_model.no_sync():
                     loss_train_unsup.backward()
 
-            #有监�?--------------------------------------
+            #有监v--------------------------------------
             #从有监督 DataLoader 的迭代器中取下一批有标签数据
             sup_index = next(dataset_train_sup)
             img_train_sup1 = sup_index['image'].float().cuda()
@@ -544,7 +566,7 @@ if __name__ == '__main__':
             feat_sup3 = outputs["bnd"][0]
             pred_train_sup3 = outputs["bnd"][1]
 
-            #拼接三路特征，作�?gating 网络的输�?
+            #拼接三路特征，作vgating 网络的输v
             gating_sup_input = torch.cat([
                 feat_sup1.detach(),
                 feat_sup2.detach(),
@@ -561,8 +583,8 @@ if __name__ == '__main__':
                     score_list_train1 = torch.cat((score_list_train1, sup_out1), dim=0)
                     mask_list_train = torch.cat((mask_list_train, mask_train_sup), dim=0)
 
-            #计算有监督损�?
-            #把主分割模型的预�?pred_train_sup1 �?gating 的分割输�?sup_out1 都与真实 mask 比较，二者损失求�?
+            #计算有监督损v
+            #把主分割模型的预vpred_train_sup1 vgating 的分割输vsup_out1 都与真实 mask 比较，二者损失求v
             #损失函数不同
             loss_train_sup1 = (criterion(pred_train_sup1, mask_train_sup) + criterion(sup_out1, mask_train_sup))
             loss_train_sup2 = sdf_loss(torch.tanh(pred_train_sup2), sdf_train_sup) + sdf_loss(torch.tanh(sup_out2), sdf_train_sup) 
@@ -572,7 +594,7 @@ if __name__ == '__main__':
             loss_train_sup.backward()
             loss_total = loss_train_sup + loss_train_unsup
 
-            #更新所有模型和 loss_fn 的参�?
+            #更新所有模型和 loss_fn 的参v
             optimizer_main.step()
             optimizer_loss.step()
             optimizer_gate.step()
@@ -583,8 +605,8 @@ if __name__ == '__main__':
                 print(f"GPU Peak Memory (peak allocated): {peak_alloc_gb:.2f} GB")
                 printed_memory = True
 
-            loss_train = loss_total #总损�?
-            train_loss_unsup += loss_train_unsup.item() #累加 epoch 累计�?，用于统计打�?
+            loss_train = loss_total #总损v
+            train_loss_unsup += loss_train_unsup.item() #累加 epoch 累计v，用于统计打v
             train_loss_sup_1 += loss_train_sup1.item()
             train_loss_sup_2 += loss_train_sup2.item()
             train_loss_sup_3 += loss_train_sup3.item()
@@ -593,8 +615,8 @@ if __name__ == '__main__':
         scheduler_warmup.step() #推进 optimizer 的学习率调度
         scheduler_warmup4.step()
 
-        #验证�?--------------------------------------
-        #每隔 display_iter�?）个 epoch 在验证集上评估一�?
+        #验证v--------------------------------------
+        #每隔 display_iterv）个 epoch 在验证集上评估一v
         if count_iter % args.display_iter == 0:
 
             score_gather_list_train1 = [torch.zeros_like(score_list_train1) for _ in range(ngpus_per_node)]

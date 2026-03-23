@@ -2,6 +2,43 @@
 import torch.nn.functional as F
 
 
+def kl_divergence(p, q):
+    return (p * (torch.log(p + 1e-8) - torch.log(q + 1e-8))).sum(dim=1)
+
+
+def expert_uncertainty(pred_seg, pred_sdf_aux, pred_bnd, T=1.0):
+    """
+    输入:
+        pred_*: logits (B,C,H,W)
+    输出:
+        U_seg, U_sdf, U_bnd: (B,H,W)
+    """
+    p_seg = F.softmax(pred_seg / T, dim=1)
+    p_sdf = F.softmax(pred_sdf_aux / T, dim=1)
+    p_bnd = F.softmax(pred_bnd / T, dim=1)
+
+    p_seg_detach = p_seg.detach()
+    p_sdf_detach = p_sdf.detach()
+    p_bnd_detach = p_bnd.detach()
+
+    U_seg = 0.5 * (
+        kl_divergence(p_seg, p_sdf_detach) +
+        kl_divergence(p_seg, p_bnd_detach)
+    )
+
+    U_sdf = 0.5 * (
+        kl_divergence(p_sdf, p_seg_detach) +
+        kl_divergence(p_sdf, p_bnd_detach)
+    )
+
+    U_bnd = 0.5 * (
+        kl_divergence(p_bnd, p_seg_detach) +
+        kl_divergence(p_bnd, p_sdf_detach)
+    )
+
+    return U_seg, U_sdf, U_bnd
+
+
 def symmetric_kl_uncertainty(logits, logits_e):
     """
     logits:    (B, C, H, W)
