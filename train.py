@@ -492,18 +492,18 @@ if __name__ == '__main__':
             loss_unsup_bnd_raw = loss_map_bnd.mean()
 
             # U must not backprop through weighting branch
-            U_seg = U_seg.detach()
-            U_sdf = U_sdf.detach()
-            U_bnd = U_bnd.detach()
+            U_seg = torch.log1p(U_seg).detach()
+            U_sdf = torch.log1p(U_sdf).detach()
+            U_bnd = torch.log1p(U_bnd).detach()
 
-            alpha_seg = 0.2
-            alpha_sdf = 0.1
-            alpha_bnd = 0.3
+            # alpha_seg = 0.2
+            # alpha_sdf = 0.1
+            # alpha_bnd = 0.3
 
             # uncertainty weighting (pixel-wise)
-            W_seg = 1.0 / (1.0 + alpha_seg * U_seg)
-            W_sdf = 1.0 / (1.0 + alpha_sdf * U_sdf)
-            W_bnd = 1.0 / (1.0 + alpha_bnd * U_bnd)
+            W_seg = 1.0 / (1.0 + U_seg)
+            W_sdf = 1.0 / (1.0 + U_sdf)
+            W_bnd = 1.0 / (1.0 + U_bnd)
 
             loss_unsup_seg = (W_seg * loss_map_seg).mean()
             loss_unsup_sdf = (W_sdf * loss_map_sdf).mean()
