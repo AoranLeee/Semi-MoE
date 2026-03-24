@@ -64,5 +64,5 @@ def sdf_uncertainty(logits, logits_e):
     logits:    (B, 1, H, W)
     logits_e:  (B, 1, H, W)
     """
-    U = (torch.tanh(logits) - torch.tanh(logits_e)) ** 2
+    U = U_sdf = torch.abs(logits - logits_e)
     return U.squeeze(1)

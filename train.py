@@ -162,7 +162,6 @@ if __name__ == '__main__':
     parser.add_argument('-l', '--lr', default=0.5, type=float)#初始学习率
     parser.add_argument('-g', '--gamma', default=0.5, type=float)#StepLR 的衰减因子：每过 step_size epoch，学习率乘以 gammav
     parser.add_argument('-u', '--unsup_weight', default=0.5, type=float)#无监督部loss 的权
-    parser.add_argument('--lambda_u', default=0.0, type=float) #无监督不确定性正则化项的权重
     parser.add_argument('--unsup_warmup_type',default='linear',choices=['linear', 'sigmoid'])
     parser.add_argument('--loss', default='dice')#分割损失类型字符串，会用于构vcriterion（segmentation_loss(args.loss, False)v
     parser.add_argument('-w', '--warm_up_duration', default=20)#学习率预热的 epoch v
@@ -441,7 +440,7 @@ if __name__ == '__main__':
             pred_train_unsup1 = outputs["seg"][1]
             feat_unsup2 = outputs["sdf"][0]
             pred_train_unsup2 = outputs["sdf"][1]
-            pred_train_unsup2_aux = Conv_1x1(feat_unsup2)
+            pred_train_unsup2_aux = Conv_1x1(feat_unsup2.detach())
             feat_unsup3 = outputs["bnd"][0]
             pred_train_unsup3 = outputs["bnd"][1]
 
@@ -454,35 +453,23 @@ if __name__ == '__main__':
             #通过 gating 网络计算输出，融合后的分vlogits，SDF logits，边vlogits,用于生成伪标v
             unsup_out1, unsup_out2, unsup_out3 = gating_model(gating_unsup_input)
 
-            #计算无监督损v
+            #计算无监督损失
             # ======================
-            # Uncertainty computation (UNSUP ONLY, expert-vs-expert)
+            # Uncertainty computation
             # ======================
-            U_seg, U_sdf, U_bnd = expert_uncertainty(
-                pred_train_unsup1,
-                pred_train_unsup2_aux,
-                pred_train_unsup3
-            )
+            U_seg = symmetric_kl_uncertainty(pred_train_unsup1, unsup_out1.detach())  # (B,H,W)
+            U_sdf = symmetric_kl_uncertainty(pred_train_unsup2_aux, unsup_out2.detach())  # (B,H,W)
+            U_bnd = symmetric_kl_uncertainty(pred_train_unsup3, unsup_out3.detach())   # (B,H,W)
 
+            U_seg = torch.clamp(U_seg, min=0.0, max=5.0)
+            U_sdf = torch.clamp(U_sdf, min=0.0, max=5.0)
+            U_bnd = torch.clamp(U_bnd, min=0.0, max=5.0)
             # pseudo label
             pseudo_seg = torch.argmax(unsup_out1.detach(), dim=1)  # (B,H,W)
             pseudo_bnd = torch.argmax(unsup_out3.detach(), dim=1)
 
-            # seg (CE pixel-wise)
-            loss_map_seg = F.cross_entropy(
-                pred_train_unsup1,
-                pseudo_seg,
-                reduction='none'
-            )  # (B,H,W)
-
-            # bnd (dice pixel-wise)
-            loss_map_bnd = dice_loss_map(
-                pred_train_unsup3,
-                pseudo_bnd,
-                reduction='none'
-            )  # (B,H,W)
-
-            # sdf (pixel-wise MSE)
+            loss_map_seg = F.cross_entropy(pred_train_unsup1,pseudo_seg,reduction='none')  # (B,H,W)
+            loss_map_bnd = dice_loss_map(pred_train_unsup3,pseudo_bnd,reduction='none')  # (B,H,W)
             loss_map_sdf = (torch.tanh(pred_train_unsup2) - torch.tanh(unsup_out2.detach())) ** 2
             loss_map_sdf = loss_map_sdf.squeeze(1)  # (B,H,W)
 
@@ -491,32 +478,15 @@ if __name__ == '__main__':
             loss_unsup_sdf_raw = loss_map_sdf.mean()
             loss_unsup_bnd_raw = loss_map_bnd.mean()
 
-            # U must not backprop through weighting branch
-            U_seg = torch.log1p(U_seg).detach()
-            U_sdf = torch.log1p(U_sdf).detach()
-            U_bnd = torch.log1p(U_bnd).detach()
+            # for logging
+            W_seg = 1/torch.exp(U_seg).clamp(min=1e-8)
+            W_sdf = 1/torch.exp(U_sdf).clamp(min=1e-8)
+            W_bnd = 1/torch.exp(U_bnd).clamp(min=1e-8)
 
-            progress = epoch / 200
-            alpha_seg = 0.2 * progress
-            alpha_sdf = 0.5 * progress
-            alpha_bnd = 0.2 * progress
+            loss_unsup_seg = ((loss_map_seg / torch.exp(U_seg)) + U_seg).mean()
+            loss_unsup_sdf = ((loss_map_sdf / torch.exp(U_sdf)) + U_sdf).mean()
+            loss_unsup_bnd = ((loss_map_bnd / torch.exp(U_bnd)) + U_bnd).mean()
 
-            # uncertainty weighting (pixel-wise)
-            W_seg = 1.0 / (1.0 + U_seg.detach())
-            W_sdf = 1.0 / (1.0 + U_sdf.detach())
-            W_bnd = 1.0 / (1.0 + U_bnd.detach())
-
-            loss_unsup_seg = (W_seg * loss_map_seg + alpha_seg * U_seg).mean()
-            loss_unsup_sdf = (W_sdf * loss_map_sdf + alpha_sdf * U_sdf).mean()
-            loss_unsup_bnd = (W_bnd * loss_map_bnd + alpha_bnd * U_bnd).mean()
-
-            # optional uncertainty regularization (default lambda_u = 0)
-            lambda_u = args.lambda_u
-            loss_uncert_reg = (
-                U_seg.mean() +
-                U_sdf.mean() +
-                U_bnd.mean()
-            )
             with torch.no_grad():
                 # weights
                 w_seg = W_seg.mean()
@@ -548,7 +518,7 @@ if __name__ == '__main__':
                 uncert_seg_dist["min"] += U_seg.min().item()
 
             # 6. multitask weighting + uncertainty regularization
-            loss_train_unsup = loss_fn(loss_unsup_seg, loss_unsup_sdf, loss_unsup_bnd) + lambda_u * loss_uncert_reg
+            loss_train_unsup = loss_fn(loss_unsup_seg, loss_unsup_sdf, loss_unsup_bnd)
             loss_train_unsup = loss_train_unsup * unsup_weight
             with model.no_sync():
                 with gating_model.no_sync():
