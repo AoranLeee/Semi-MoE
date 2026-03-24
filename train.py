@@ -496,18 +496,19 @@ if __name__ == '__main__':
             U_sdf = torch.log1p(U_sdf).detach()
             U_bnd = torch.log1p(U_bnd).detach()
 
-            # alpha_seg = 0.2
-            # alpha_sdf = 0.1
-            # alpha_bnd = 0.3
+            progress = epoch / 200
+            alpha_seg = 0.2 * progress
+            alpha_sdf = 0.5 * progress
+            alpha_bnd = 0.2 * progress
 
             # uncertainty weighting (pixel-wise)
-            W_seg = 1.0 / (1.0 + U_seg)
-            W_sdf = 1.0 / (1.0 + U_sdf)
-            W_bnd = 1.0 / (1.0 + U_bnd)
+            W_seg = 1.0 / (1.0 + U_seg.detach())
+            W_sdf = 1.0 / (1.0 + U_sdf.detach())
+            W_bnd = 1.0 / (1.0 + U_bnd.detach())
 
-            loss_unsup_seg = (W_seg * loss_map_seg).mean()
-            loss_unsup_sdf = (W_sdf * loss_map_sdf).mean()
-            loss_unsup_bnd = (W_bnd * loss_map_bnd).mean()
+            loss_unsup_seg = (W_seg * loss_map_seg + alpha_seg * U_seg).mean()
+            loss_unsup_sdf = (W_sdf * loss_map_sdf + alpha_sdf * U_sdf).mean()
+            loss_unsup_bnd = (W_bnd * loss_map_bnd + alpha_bnd * U_bnd).mean()
 
             # optional uncertainty regularization (default lambda_u = 0)
             lambda_u = args.lambda_u
